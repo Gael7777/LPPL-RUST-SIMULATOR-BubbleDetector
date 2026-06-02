@@ -1,0 +1,31 @@
+[package]
+name = "hlpll-backtester"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Data handling 
+polars = { version = "0.45", features = [
+    "lazy", "parquet", "csv", "temporal", "serde", 
+    "dtype-date", "dtype-datetime", "dtype-time",
+    "strings", "round_series", "concat_str", "is_in", "fmt"
+] }
+polars-ops = "0.45"
+# HTTP client for Yahoo Finance
+reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"] }
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+# Plotting
+plotters = "0.3"
+# Serde
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# Logging + CLI
+env_logger = "0.11"
+log = "0.4"
+clap = { version = "4.5", features = ["derive"] }
+# RNG + stats (pure, no linalg)
+rand = "0.8"
+statrs = "0.17"
+# Small dense linear algebra (pure Rust)
+nalgebra = { version = "0.33", features = ["serde-serialize"] }
