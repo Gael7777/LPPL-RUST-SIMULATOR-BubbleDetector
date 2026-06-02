@@ -468,6 +468,78 @@ Inspect `results/CAR_signals.csv` and compare `bubble_score` to `close` and `vol
 
 ---
 
+## 11.5 Interactive Explorer (TUI)
+
+A separate **modular** binary for live tweaking, Yahoo API validation, bubble indicator visualization, and $10k (or custom capital) trade simulation that **strictly re-uses the same strategy code**.
+
+```bash
+cargo run --release --bin hlpll-explorer
+# or cargo build --release --bin hlpll-explorer ; .\target\release\hlpll-explorer.exe
+```
+
+**Features / full user control**
+- Edit any param live (ticker, dates, window, refit, long/short thresh, cost, capital) — Tab to focus, type or +/- to nudge.
+- **[F]** — Test Yahoo Finance API for the exact ticker+time range you chose. Shows bar count, date span, last price. Explicit success/failure.
+- **[R]** — Run the *exact* same `run_backtest` + LPPL + bubble_score + position logic as the main app (and the paper strategy). 10k (or your capital) equity is derived by simple scaling of the multiplier curve.
+- Live **three stacked terminal charts**:
+  - Price colored green (long), red (short), gray (flat) — visual "bubble regime" indicator.
+  - Bubble score with horizontal threshold lines. Clearly see when it crosses into long/short.
+  - Dollar equity curve for your simulated investment.
+- Pan (← → h l), zoom ([ ]), cursor (j k), reset view (0). Cursor panel shows live decomposition (eps_norm, hype, sentiment, decision).
+- Trade log with per-leg $PnL computed from the equity curve segments (strictly follows every position change + cost).
+- **[E]** exports the full signals CSV, normalized + dollar equity CSVs, and the PNG equity plot (via shared `export_backtest_artifacts`).
+- Press `?` for help overlay. `q` to quit.
+
+The explorer is intentionally separated (own `src/bin/`) so the core backtester stays a fast headless CLI while giving researchers an interactive lab for "what if I change the threshold / window / ticker / period?" with immediate visual feedback.
+
+### 11.6 Native GUI Explorer (proper Windows .exe + modern UI)
+
+A third, fully separate frontend using **egui + eframe** (immediate-mode native GUI). This produces a real double-clickable Windows executable with high-quality interactive charts (zoom, pan, hover, multiple synchronized plots, regime-colored price, live bubble-score thresholds, $ equity, cursor scrubbing, trade log, etc.).
+
+```bash
+# Clean build — only pulls egui/wgpu/etc when you ask for the GUI feature
+cargo run --release --bin hlpll-gui --no-default-features --features gui
+```
+
+- All heavy lifting (Yahoo fetch, LPPL multi-start, bubble score, strategy, trade extraction, exports) goes through the single `HlpplEngine` in the library.
+- Left panel: all tweakable parameters with sliders + text fields + preset buttons.
+- "Test Yahoo API" and "Run Simulation" never block the UI (background worker thread + channels).
+- Central area: three live `egui_plot` charts (price by position color, bubble score + threshold lines, dollar equity).
+- Full cursor control, export button that re-uses the engine's artifact writer.
+- Result: a proper, accurate, nice-looking desktop application for detailed what-if analysis.
+
+The three frontends (CLI, TUI `hlpll-explorer`, native GUI `hlpll-gui`) + any future consumers all share the exact same isolated logic engine.
+
+---
+
+## Modularity & Isolating the HLPPL Logic Engine
+
+If you only ever want the pure backtesting engine (no UIs):
+
+```toml
+[dependencies]
+hlpll-backtester = { version = "...", default-features = false }
+```
+
+Then just use:
+
+```rust
+use hlpll_backtester::{HlpplEngine, BacktestConfig, fetch_yahoo_history};
+```
+
+`HlpplEngine` (in `src/engine.rs`) + the re-exports at the crate root are the blessed surface. The `modules/` directory contains the implementation details and is public mainly for the in-tree frontends.
+
+Feature flags in `Cargo.toml` ensure that `ratatui`, `egui`, `clap`, etc. are only compiled when you actually build the corresponding binary.
+
+This structure makes it straightforward to:
+- Use the engine from Python (via PyO3) or another Rust service
+- Write a web version later (axum + egui_web or leptos)
+- Swap the visualization layer completely
+
+---
+
+
+
 ## 12. Extensions
 
 1. **News parquet** → daily mention counts → replace `compute_volume_hype`.  

@@ -4,11 +4,9 @@ use env_logger::Env;
 use log::info;
 use std::error::Error;
 
-mod modules;
-
-use modules::backtest::{run_backtest, BacktestConfig};
-use modules::data::fetch_yahoo_history;
-use modules::utils::{print_summary, save_series_csv, save_signals_csv};
+use hlpll_backtester::modules::backtest::{run_backtest, BacktestConfig};
+use hlpll_backtester::modules::data::fetch_yahoo_history;
+use hlpll_backtester::modules::utils::{plot_equity_curve, print_summary, save_series_csv, save_signals_csv};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "HLPLL / HLPPL Bubble Backtester (Rust)")]
@@ -144,50 +142,4 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Simple equity curve plot using plotters
-fn plot_equity_curve(
-    dates: &[NaiveDate],
-    equity: &[f64],
-    out_path: &str,
-    ticker: &str,
-) -> Result<(), Box<dyn Error>> {
-    use plotters::prelude::*;
 
-    if dates.len() < 2 {
-        return Ok(());
-    }
-
-    let root = BitMapBackend::new(out_path, (960, 540)).into_drawing_area();
-    root.fill(&WHITE)?;
-
-    let min_eq = equity.iter().fold(f64::INFINITY, |a, &b| a.min(b));
-    let max_eq = equity.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
-    let y_range = (min_eq * 0.95)..(max_eq * 1.05);
-
-    let mut chart = ChartBuilder::on(&root)
-        .caption(format!("{} Equity Curve (HLPLL Strategy)", ticker), ("sans-serif", 28))
-        .margin(10)
-        .x_label_area_size(40)
-        .y_label_area_size(60)
-        .build_cartesian_2d(dates[0]..*dates.last().unwrap(), y_range)?;
-
-    chart.configure_mesh().draw()?;
-
-    let series_data: Vec<(NaiveDate, f64)> =
-        dates.iter().zip(equity.iter()).map(|(d, e)| (*d, *e)).collect();
-
-    chart
-        .draw_series(LineSeries::new(series_data, &BLUE))
-        .unwrap()
-        .label("Strategy Equity")
-        .legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &BLUE));
-
-    chart
-        .configure_series_labels()
-        .background_style(&WHITE.mix(0.8))
-        .border_style(&BLACK)
-        .draw()?;
-
-    root.present()?;
-    Ok(())
-}
