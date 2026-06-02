@@ -1,1 +1,3 @@
 /target
+/data/raw/*
+/data/processed/*
