@@ -50,6 +50,10 @@ struct Args {
     /// Random seed for LPPL fitting (fixed seed makes runs reproducible)
     #[arg(long, default_value_t = 42)]
     random_seed: u64,
+
+    /// Optional: print buy/sell/hold recommendation at this specific date (YYYY-MM-DD, must be in range)
+    #[arg(long)]
+    query_date: Option<String>,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -107,6 +111,26 @@ fn main() -> Result<(), Box<dyn Error>> {
         match run_backtest(ticker, &bars, &cfg) {
             Ok(res) => {
                 print_summary(&res);
+
+                // Query specific date recommendation if provided
+                if let Some(qstr) = &args.query_date {
+                    if let Ok(qdate) = NaiveDate::parse_from_str(qstr, "%Y-%m-%d") {
+                        if let Some(sig) = res.signals.iter().find(|s| s.date == qdate) {
+                            let rec = if sig.position > 0.5 {
+                                "BUY / GO LONG (bullish signal from bubble score)"
+                            } else if sig.position < -0.5 {
+                                "SELL / GO SHORT (bearish / overextension signal)"
+                            } else {
+                                "HOLD / FLAT (no strong directional signal)"
+                            };
+                            println!("Recommendation at {}: {} (bubble_score={:.3}, position={})", qdate, rec, sig.bubble_score, sig.position);
+                        } else {
+                            println!("Date {} not in backtest signals range for {}.", qdate, ticker);
+                        }
+                    } else {
+                        eprintln!("Invalid --query-date format, use YYYY-MM-DD");
+                    }
+                }
 
                 // Save equity curve
                 let equity_path = format!("{}/{}_equity.csv", args.outdir, ticker);

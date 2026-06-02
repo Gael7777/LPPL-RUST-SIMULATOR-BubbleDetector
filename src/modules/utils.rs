@@ -76,6 +76,16 @@ pub fn print_summary(result: &crate::modules::backtest::BacktestResult) {
     println!("Num Trades            : {}", result.num_trades);
     println!("Buy & Hold Return     : {:.2}%", result.buy_hold_return * 100.0);
     println!("Buy & Hold Sharpe     : {:.3}", result.buy_hold_sharpe);
+    if let Some(last) = result.signals.last() {
+        let rec = if last.position > 0.5 {
+            "BUY / GO LONG (bullish)"
+        } else if last.position < -0.5 {
+            "SELL / GO SHORT (bearish/risk)"
+        } else {
+            "HOLD / NEUTRAL (flat)"
+        };
+        println!("Final recommendation at {}: {}", last.date, rec);
+    }
 }
 
 /// Simple equity curve plot using plotters (used by CLI and explorer export).

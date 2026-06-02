@@ -380,7 +380,7 @@ impl App {
 
                 let cap = self.engine.initial_capital;
                 self.status = format!(
-                    "Simulation complete (engine). {} trades | Final ${:.0} on ${:.0} start. Pan ←→, j/k cursor, [E] export.",
+                    "Simulation complete (engine). {} trades | Final ${:.0} on ${:.0} start. Pan ←→, j/k cursor (BUY/SELL/HOLD rec), [E] export.",
                     self.trades.len(),
                     self.engine.final_capital(),
                     cap
@@ -812,7 +812,7 @@ fn ui(f: &mut Frame, app: &App) {
         f.render_widget(legend, leg_rect);
     } else {
         let placeholder = Paragraph::new(
-            "No simulation results.\n\nPress [F] to fetch data from Yahoo (this TESTS whether the Yahoo Finance API works for your chosen security + time range).\nPress [R] (runs fetch if needed) to execute the full LPPL fit + bubble_score + position logic EXACTLY as the main strategy.\n\nYou will see three live updating charts: regime-colored PRICE, the BUBBLE SCORE indicator with threshold lines, and the $ EQUITY curve from your 10k (or custom) investment.\nAll controls are live — tweak any field and re-run instantly.",
+            "No simulation results.\n\nPress [F] to fetch... [R] to run (uses random_seed for LPPL multi-start reproducibility).\n\nThe RNG seed controls the random sampling of LPPL nonlinear params (tc/m/omega/phi) for the fit search (needed b/c non-convex opt; fixed seed => reproducible backtests for fair comparison. Not 'luck' - extensive search + filters).\n\nCursor shows clear RECOMMENDATION: BUY/SELL/HOLD at that date based on final position after score vs thresh (with bias/invert).\n\nCharts: PRICE (colored by regime), BUBBLE SCORE (steps b/c refits), EQUITY vs B&H.\nTweak fields (incl seed) + rerun live.",
         )
         .block(Block::default().title(" Visualization — Bubble Indicator + Strict $10k Trade Sim (full user control) ").borders(Borders::ALL))
         .wrap(Wrap { trim: true });
@@ -855,6 +855,17 @@ fn ui(f: &mut Frame, app: &App) {
             "eps_norm={:.3}  hype={:.3}  sent={:.3}",
             sig.eps_norm, sig.hype_volume, sig.sentiment
         )));
+        let rec = if sig.position > 0.5 {
+            ("BUY / GO LONG (bullish)", Color::Green)
+        } else if sig.position < -0.5 {
+            ("SELL / GO SHORT (bearish/risk)", Color::Red)
+        } else {
+            ("HOLD / NEUTRAL (flat)", Color::Gray)
+        };
+        cursor_lines.push(Line::from(vec![
+            Span::raw("RECOMMENDATION: "),
+            Span::styled(rec.0, Style::default().fg(rec.1).add_modifier(Modifier::BOLD)),
+        ]));
         cursor_lines.push(Line::from(vec![
             Span::raw("position: "),
             Span::styled(pos_str, Style::default().fg(pos_col).add_modifier(Modifier::BOLD)),
@@ -864,7 +875,7 @@ fn ui(f: &mut Frame, app: &App) {
         cursor_lines.push(Line::from("Move cursor with j/k after running a sim."));
     }
     let cursor_box = Paragraph::new(cursor_lines)
-        .block(Block::default().title(" Live Bubble Indicator (at cursor) ").borders(Borders::ALL))
+        .block(Block::default().title(" Live Bubble Indicator + RECOMMENDATION (cursor j/k or mouse in GUI) ").borders(Borders::ALL))
         .wrap(Wrap { trim: true });
     f.render_widget(cursor_box, detail_chunks[0]);
 

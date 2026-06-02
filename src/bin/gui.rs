@@ -89,6 +89,8 @@ struct HlpplGuiApp {
     position_bias: hlpll_backtester::PositionBias,
     invert_signal: bool,
     random_seed: u64,  // exposed so user can control reproducibility of LPPL random search
+
+    track_on_hover: bool, // for live cursor tracker on price chart
 }
 
 impl HlpplGuiApp {
@@ -198,6 +200,7 @@ impl HlpplGuiApp {
             position_bias: hlpll_backtester::PositionBias::LongShort,
             invert_signal: false,
             random_seed: 42,
+            track_on_hover: true,
         }
     }
 
@@ -522,6 +525,7 @@ impl eframe::App for HlpplGuiApp {
                 ui.checkbox(&mut self.show_price, "Price (regime colored)");
                 ui.checkbox(&mut self.show_score, "Bubble Score");
                 ui.checkbox(&mut self.show_equity, "$ Equity");
+                ui.checkbox(&mut self.track_on_hover, "Track mouse hover (live cursor on price chart)");
                 ui.separator();
                 if ui.button("Fit view").clicked() {
                     self.view_start = 0;
@@ -600,11 +604,19 @@ impl eframe::App for HlpplGuiApp {
                         let cur_x = (self.selected_idx.saturating_sub(vs)) as f64;
                         plot_ui.vline(VLine::new(cur_x).color(egui::Color32::YELLOW).width(1.5).name("Cursor"));
 
-                        // Click/drag on price chart moves the cursor (full user control)
-                        if let Some(coord) = plot_ui.pointer_coordinate() {
-                            if plot_ui.response().dragged() || plot_ui.response().clicked() {
+                        // Live mouse tracker for cursor (if enabled): moving mouse over price chart updates the selected day in real-time for buy/sell/hold inspection
+                        if self.track_on_hover {
+                            if let Some(coord) = plot_ui.pointer_coordinate() {
                                 let rel = (coord.x.round() as isize).max(0) as usize;
                                 self.selected_idx = (vs + rel).min(vs + vl.saturating_sub(1));
+                            }
+                        } else {
+                            // Fallback to click/drag only
+                            if let Some(coord) = plot_ui.pointer_coordinate() {
+                                if plot_ui.response().dragged() || plot_ui.response().clicked() {
+                                    let rel = (coord.x.round() as isize).max(0) as usize;
+                                    self.selected_idx = (vs + rel).min(vs + vl.saturating_sub(1));
+                                }
                             }
                         }
                     });
@@ -686,17 +698,28 @@ impl eframe::App for HlpplGuiApp {
             // Cursor / current reading + simple trade list
             ui.separator();
             ui.horizontal(|ui| {
-                ui.label("Cursor (yellow line = inspected day; click top price chart or drag slider):").on_hover_text("The cursor picks one specific trading day. The details to the right show the exact engine outputs for that day so you can understand why the strategy was long, short or flat, and what the LPPL + hype + sentiment components looked like.");
+                ui.label("Cursor (yellow line = inspected day; hover price chart or drag slider for live buy/sell/hold):").on_hover_text("The cursor (or live mouse tracker) picks a specific trading day within the date range. It shows the model's clear RECOMMENDATION: BUY (go long on bullish bubble signal), SELL (go short on bearish/overextended), or HOLD (neutral). Use it to get precise sentiment at any date in the simulation, not just end.");
                 let max_idx = n.saturating_sub(1);
                 ui.add(egui::Slider::new(&mut self.selected_idx, 0..=max_idx));
 
                 if let Some(sig) = res.signals.get(self.selected_idx) {
+                    let (rec_str, rec_color) = if sig.position > 0.5 {
+                        ("BUY / GO LONG (bullish from positive bubble score)", egui::Color32::GREEN)
+                    } else if sig.position < -0.5 {
+                        ("SELL / GO SHORT (bearish / bubble risk from negative score)", egui::Color32::RED)
+                    } else {
+                        ("HOLD / NEUTRAL (flat, no strong signal)", egui::Color32::GRAY)
+                    };
+                    ui.colored_label(
+                        rec_color,
+                        format!("RECOMMENDATION AT {}: {}", sig.date, rec_str)
+                    );
                     let pos_str = if sig.position > 0.5 { "LONG" } else if sig.position < -0.5 { "SHORT" } else { "FLAT" };
                     ui.colored_label(
                         if sig.position > 0.5 { egui::Color32::GREEN } else if sig.position < -0.5 { egui::Color32::RED } else { egui::Color32::GRAY },
-                        format!("{} {}  score={:.3}  close=${:.2}", sig.date, pos_str, sig.bubble_score, sig.close)
+                        format!("  (pos={}  score={:.3}  close=${:.2})", pos_str, sig.bubble_score, sig.close)
                     );
-                    ui.label(format!("eps={:.2} hype={:.2} sent={:.2}  {}", sig.eps_norm, sig.hype_volume, sig.sentiment, if sig.trade { "(TRADE)" } else { "" }));
+                    ui.label(format!("  components: eps={:.2} hype={:.2} sent={:.2}  {}", sig.eps_norm, sig.hype_volume, sig.sentiment, if sig.trade { "(TRADE day)" } else { "" }));
                 }
             });
 
@@ -783,6 +806,13 @@ impl eframe::App for HlpplGuiApp {
                     ui.label("'Fit view' + 'view width' slider: Control how much history is shown in the three charts (independent of the cursor). 'Fit view' shows the whole simulation.");
                     ui.label("The summary bar at the very top gives the headline performance numbers for the whole run (using your capital).");
                     ui.label("Trade log: Expand to see every round-trip or leg the strategy actually took, with realized $ PnL on your capital (computed from the equity curve segments between position changes).");
+
+                    ui.separator();
+                    ui.heading("The Random Seed in LPPL (why randomness & reproducibility)");
+                    ui.label("The LPPL equation ln(p) = A + B*tau^m + C*tau^m * cos(omega*ln(tau)+phi) has 4 nonlinear params (tc,m,omega,phi) that are difficult to fit analytically (non-convex loss surface with many local minima).");
+                    ui.label("We use random multi-start search: sample 1200 random (tc,m,omega,phi) in bounds using the RNG seeded by 'random_seed', for each solve linear A/B/C via OLS, pick best valid (m in (0,1), omega range, damping condition).");
+                    ui.label("Randomness is needed for global-ish exploration without heavy solvers. The seed makes it 100% reproducible: same seed+data => identical 'random' samples => same best fit => same bubble_score => same positions => same backtest results.");
+                    ui.label("Trust for backtesting? With fixed seed, yes for apples-to-apples comparison of params/strategies (reproducible 'what-if'). Different seeds give slightly different models (robustness check). But it's still an approx model + proxies; not crystal ball. For live 'invest now?', treat as research signal only, not sole decider. Always combine with fundamentals, risk mgmt, multiple indicators. Past != future. This is NOT financial advice.");
 
                     ui.separator();
                     ui.heading("Strategy in one sentence (strictly followed)");

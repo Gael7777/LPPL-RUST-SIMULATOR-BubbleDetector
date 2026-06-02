@@ -138,19 +138,14 @@ pub fn run_backtest(
     for i in cfg.lookback_days..n {
         let do_refit = (i - cfg.lookback_days) % cfg.refit_every == 0 || live_model.is_none();
 
-        let mut bubble_score = 0.0;
-        let mut eps_norm = 0.0;
-        let mut hype_volume = 0.0;
-        let mut sentiment = 0.0;
-
         // Always compute *fresh* hype and sentiment using the most recent data up to bar i.
         // This makes the non-LPPL components live every day (cheap to do).
-        {
+        let (hype_volume, sentiment) = {
             let hype_w = 60usize;
             let hstart = i.saturating_sub(hype_w);
             let vol_win: Vec<f64> = bars[hstart..=i].iter().map(|b| b.volume).collect();
             let hvals = compute_volume_hype(&vol_win, hype_w);
-            hype_volume = *hvals.last().unwrap_or(&0.0);
+            let hype = *hvals.last().unwrap_or(&0.0);
 
             let ret_win: Vec<f64> = bars[hstart..=i]
                 .windows(2)
@@ -160,14 +155,15 @@ pub fn run_backtest(
                 })
                 .collect();
             let svals = compute_simple_sentiment(&ret_win);
-            sentiment = *svals.last().unwrap_or(&0.0);
-        }
+            let sent = *svals.last().unwrap_or(&0.0);
+            (hype, sent)
+        };
 
-        if do_refit {
+        let (bubble_score, eps_norm) = if do_refit {
             // Full (expensive) LPPL re-fit + historical eps_norm from the fit window.
             match fit_lppl_on_bars(bars, i - cfg.lookback_days, i, cfg.random_seed) {
                 Ok(fit) => {
-                    eps_norm = normalize_last_residual(&fit.residuals);
+                    let eps_norm = normalize_last_residual(&fit.residuals);
 
                     // Compute the std used for normalization so we can project later.
                     let nres = fit.residuals.len();
@@ -182,11 +178,12 @@ pub fn run_backtest(
                         refit_i: i,
                     });
 
-                    bubble_score = compute_bubble_score(eps_norm, hype_volume, sentiment, 0.7, 0.3);
+                    let bubble_score = compute_bubble_score(eps_norm, hype_volume, sentiment, 0.7, 0.3);
+                    (bubble_score, eps_norm)
                 }
                 Err(e) => {
                     log::warn!("LPPL fit failed at {} for {}: {}", bars[i].date, ticker, e);
-                    bubble_score = 0.0;
+                    (0.0, 0.0)
                 }
             }
         } else if let Some(m) = &live_model {
@@ -202,13 +199,14 @@ pub fn run_backtest(
             let logp = (bars[i].adj_close.max(0.01)).ln();
             let fitted = m.params.predict_log_price(t);
             let resid = logp - fitted;
-            eps_norm = resid / m.residual_std;
+            let eps_norm = resid / m.residual_std;
 
-            bubble_score = compute_bubble_score(eps_norm, hype_volume, sentiment, 0.7, 0.3);
+            let bubble_score = compute_bubble_score(eps_norm, hype_volume, sentiment, 0.7, 0.3);
+            (bubble_score, eps_norm)
         } else {
             // fallback (should not happen)
-            bubble_score = 0.0;
-        }
+            (0.0, 0.0)
+        };
 
         // Decide new position, applying invert + bias
         let raw = if bubble_score > cfg.long_threshold {

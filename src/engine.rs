@@ -41,7 +41,8 @@ pub struct Trade {
 ///     NaiveDate::from_ymd_opt(2023,1,1).unwrap(),
 ///     NaiveDate::from_ymd_opt(2024,12,31).unwrap(),
 ///     BacktestConfig { lookback_days: 180, random_seed: 42, ..Default::default() },
-///     // random_seed makes LPPL fits (and thus the whole simulation) reproducible.
+///     // random_seed controls the RNG for LPPL's multi-start nonlinear search (tc,m,omega,phi samples).
+///     // The LPPL eq is nonlinear/hard to optimize globally, so random restarts explore; seed makes deterministic.
 ///     10_000.0,
 /// );
 /// eng.fetch()?;
