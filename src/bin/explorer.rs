@@ -31,7 +31,7 @@ use hlpll_backtester::engine::{HlpplEngine, Trade};
 use hlpll_backtester::modules::backtest::{BacktestConfig, BacktestResult, DailySignal};
 use hlpll_backtester::modules::data::PriceBar;
 
-const NUM_FIELDS: usize = 10;
+const NUM_FIELDS: usize = 13; // main params + run_mode(10), ensemble(11), predict_horizon(12). Advanced analysis strings are parsed on [R] even if not all tab-focusable.
 
 struct App {
     // --- Editable parameter strings (UI source of truth for the form) ---
@@ -45,6 +45,23 @@ struct App {
     cost_str: String,
     capital_str: String,
     random_seed_str: String,
+
+    // NEW extensive
+    enable_bubble_analysis_str: String,
+    analysis_lookback_min_str: String,
+    analysis_lookback_max_str: String,
+    analysis_step_str: String,
+    filter_m_min_str: String,
+    filter_m_max_str: String,
+    filter_omega_min_str: String,
+    filter_omega_max_str: String,
+    confidence_flat_threshold_str: String,
+    use_confidence_for_flat: bool, // simple bool for TUI
+
+    // Run mode + ensemble for the most extensive features
+    run_mode_str: String, // "historical" | "prediction" | "live" | "hybrid"
+    ensemble_seeds_str: String,
+    predict_horizon_str: String,
 
     focused: usize, // 0..NUM_FIELDS-1
 
@@ -88,6 +105,17 @@ impl App {
         let capital_str = "10000".to_string();
         let random_seed_str = "42".to_string();
 
+        // NEW
+        let enable_bubble_analysis_str = "true".to_string();
+        let analysis_lookback_min_str = "60".to_string();
+        let analysis_lookback_max_str = "260".to_string();
+        let analysis_step_str = "5".to_string();
+        let filter_m_min_str = "0.1".to_string();
+        let filter_m_max_str = "0.9".to_string();
+        let filter_omega_min_str = "4.5".to_string();
+        let filter_omega_max_str = "13.0".to_string();
+        let confidence_flat_threshold_str = "50.0".to_string();
+
         // Parse once for the engine (fall back to sensible defaults on bad strings)
         let start = NaiveDate::parse_from_str(&start_str, "%Y-%m-%d").unwrap_or_else(|_| NaiveDate::from_ymd_opt(2022, 1, 1).unwrap());
         let end = NaiveDate::parse_from_str(&end_str, "%Y-%m-%d").unwrap_or_else(|_| NaiveDate::from_ymd_opt(2024, 12, 31).unwrap());
@@ -99,6 +127,17 @@ impl App {
         let cap: f64 = capital_str.trim().parse().unwrap_or(10000.0);
         let seed: u64 = random_seed_str.trim().parse().unwrap_or(42);
 
+        // analysis parses (were partially present)
+        let enable_analysis: bool = enable_bubble_analysis_str.trim().parse().unwrap_or(true);
+        let min_lb: usize = analysis_lookback_min_str.trim().parse().unwrap_or(60);
+        let max_lb: usize = analysis_lookback_max_str.trim().parse().unwrap_or(260);
+        let step: usize = analysis_step_str.trim().parse().unwrap_or(5);
+        let mmin: f64 = filter_m_min_str.trim().parse().unwrap_or(0.1);
+        let mmax: f64 = filter_m_max_str.trim().parse().unwrap_or(0.9);
+        let omin: f64 = filter_omega_min_str.trim().parse().unwrap_or(4.5);
+        let omax: f64 = filter_omega_max_str.trim().parse().unwrap_or(13.0);
+        let conf_thresh: f64 = confidence_flat_threshold_str.trim().parse().unwrap_or(50.0);
+
         let cfg = BacktestConfig {
             lookback_days: window,
             refit_every: refit,
@@ -107,6 +146,19 @@ impl App {
             cost_bps: cost,
             max_position: 1.0,
             random_seed: seed,
+
+            enable_bubble_analysis: enable_analysis,
+            analysis_lookback_min: min_lb,
+            analysis_lookback_max: max_lb,
+            analysis_step_days: step,
+            filter_m_min: mmin,
+            filter_m_max: mmax,
+            filter_omega_min: omin,
+            filter_omega_max: omax,
+            filter_require_b_negative: true,
+            filter_min_tc_offset_days: 3,
+            use_confidence_for_flat: true,
+            confidence_flat_threshold: conf_thresh,
             ..Default::default()
         };
 
@@ -123,6 +175,20 @@ impl App {
             cost_str,
             capital_str,
             random_seed_str,
+            enable_bubble_analysis_str,
+            analysis_lookback_min_str,
+            analysis_lookback_max_str,
+            analysis_step_str,
+            filter_m_min_str,
+            filter_m_max_str,
+            filter_omega_min_str,
+            filter_omega_max_str,
+            confidence_flat_threshold_str,
+            use_confidence_for_flat: true,
+
+            run_mode_str: "historical".into(),
+            ensemble_seeds_str: "42".into(),
+            predict_horizon_str: "60".into(),
             focused: 0,
             engine,
             bars: None,
@@ -154,7 +220,10 @@ impl App {
             7 => "Cost (bps one-way)",
             8 => "Initial Capital ($)",
             9 => "RNG seed (LPPL fits)",
-            _ => "?",
+            10 => "Run mode (hist/pred/live/hybrid)",
+            11 => "Ensemble seeds (csv)",
+            12 => "Predict horizon days",
+            _ => "Adv. (edit in sync or GUI)",
         }
     }
 
@@ -170,6 +239,9 @@ impl App {
             7 => &mut self.cost_str,
             8 => &mut self.capital_str,
             9 => &mut self.random_seed_str,
+            10 => &mut self.run_mode_str,
+            11 => &mut self.ensemble_seeds_str,
+            12 => &mut self.predict_horizon_str,
             _ => &mut self.ticker,
         }
     }
@@ -244,6 +316,16 @@ impl App {
             .parse()
             .unwrap_or(42);
 
+        let enable_analysis: bool = self.enable_bubble_analysis_str.trim().parse().unwrap_or(true);
+        let min_lb: usize = self.analysis_lookback_min_str.trim().parse().unwrap_or(60);
+        let max_lb: usize = self.analysis_lookback_max_str.trim().parse().unwrap_or(260);
+        let step: usize = self.analysis_step_str.trim().parse().unwrap_or(5);
+        let mmin: f64 = self.filter_m_min_str.trim().parse().unwrap_or(0.1);
+        let mmax: f64 = self.filter_m_max_str.trim().parse().unwrap_or(0.9);
+        let omin: f64 = self.filter_omega_min_str.trim().parse().unwrap_or(4.5);
+        let omax: f64 = self.filter_omega_max_str.trim().parse().unwrap_or(13.0);
+        let conf_thresh: f64 = self.confidence_flat_threshold_str.trim().parse().unwrap_or(50.0);
+
         let cfg = BacktestConfig {
             lookback_days: window,
             refit_every: refit,
@@ -252,6 +334,23 @@ impl App {
             cost_bps: cost,
             max_position: 1.0,
             random_seed: seed,
+
+            enable_bubble_analysis: enable_analysis,
+            analysis_lookback_min: min_lb,
+            analysis_lookback_max: max_lb,
+            analysis_step_days: step,
+            filter_m_min: mmin,
+            filter_m_max: mmax,
+            filter_omega_min: omin,
+            filter_omega_max: omax,
+            filter_require_b_negative: true,
+            filter_min_tc_offset_days: 3,
+            use_confidence_for_flat: self.use_confidence_for_flat,
+            confidence_flat_threshold: conf_thresh,
+
+            run_mode: match self.run_mode_str.as_str() { "prediction"=>hlpll_backtester::RunMode::FutureBubblePrediction, "live"=>hlpll_backtester::RunMode::LiveCurrentSentiment, "hybrid"=>hlpll_backtester::RunMode::HybridAnalysis, _=>hlpll_backtester::RunMode::HistoricalBacktest },
+            ensemble_seeds: if self.ensemble_seeds_str.trim().is_empty(){vec![]}else{self.ensemble_seeds_str.split(',').filter_map(|s|s.trim().parse().ok()).collect()},
+            predict_horizon_days: self.predict_horizon_str.trim().parse().unwrap_or(60),
             ..Default::default()
         };
 
@@ -369,21 +468,32 @@ impl App {
             self.bars = self.engine.bars.clone();
         }
 
-        self.status = "Running via HlpplEngine (walk-forward LPPL + bubble score + strict strategy)...".to_string();
+        self.status = "Running via HlpplEngine (mode-aware: historical / future prediction / live sentiment)...".to_string();
         self.last_error = None;
 
-        match self.engine.run() {
+        match self.engine.run_with_mode() {
             Ok(()) => {
                 // Pull results back for TUI viz
                 self.result = self.engine.result.clone();
                 self.trades = self.engine.trades.clone();
 
                 let cap = self.engine.initial_capital;
+                let mode = self.engine.config.run_mode;
+                let mut extra = String::new();
+                if let Some(p) = &self.engine.last_future_prediction {
+                    extra = format!(" | C1={:.1}% {} median_tc~{} ({}d)", p.bubble_confidence_index, p.risk_level, p.median_predicted_date.map(|d|d.to_string()).unwrap_or("N/A".into()), p.median_days_to_tc.unwrap_or(0));
+                }
+                if let Some(s) = &self.engine.last_live_sentiment {
+                    extra = format!(" | LIVE: {} C1={:.1}%", s.recommendation, s.bubble_confidence);
+                }
                 self.status = format!(
-                    "Simulation complete (engine). {} trades | Final ${:.0} on ${:.0} start. Pan ←→, j/k cursor (BUY/SELL/HOLD rec), [E] export.",
+                    "Run complete (mode {:?}). {} trades | Final ${:.0} on ${:.0} start.{}{}  j/k cursor, [E] export.",
+                    mode,
                     self.trades.len(),
                     self.engine.final_capital(),
-                    cap
+                    cap,
+                    extra,
+                    if self.result.is_none() { " (prediction/live: see info below)" } else { "" }
                 );
 
                 if let Some(r) = &self.result {
@@ -623,6 +733,9 @@ fn ui(f: &mut Frame, app: &App) {
             7 => &app.cost_str,
             8 => &app.capital_str,
             9 => &app.random_seed_str,
+            10 => &app.run_mode_str,
+            11 => &app.ensemble_seeds_str,
+            12 => &app.predict_horizon_str,
             _ => &app.ticker,
         };
         let is_focus = i == app.focused;
@@ -811,12 +924,39 @@ fn ui(f: &mut Frame, app: &App) {
         let leg_rect = Rect { x: chart_area.x, y: chart_area.y + chart_area.height.saturating_sub(1), width: chart_area.width, height: 1 };
         f.render_widget(legend, leg_rect);
     } else {
-        let placeholder = Paragraph::new(
-            "No simulation results.\n\nPress [F] to fetch... [R] to run (uses random_seed for LPPL multi-start reproducibility).\n\nThe RNG seed controls the random sampling of LPPL nonlinear params (tc/m/omega/phi) for the fit search (needed b/c non-convex opt; fixed seed => reproducible backtests for fair comparison. Not 'luck' - extensive search + filters).\n\nCursor shows clear RECOMMENDATION: BUY/SELL/HOLD at that date based on final position after score vs thresh (with bias/invert).\n\nCharts: PRICE (colored by regime), BUBBLE SCORE (steps b/c refits), EQUITY vs B&H.\nTweak fields (incl seed) + rerun live.",
-        )
-        .block(Block::default().title(" Visualization — Bubble Indicator + Strict $10k Trade Sim (full user control) ").borders(Borders::ALL))
-        .wrap(Wrap { trim: true });
-        f.render_widget(placeholder, chart_area);
+        // Support for new modes: show prediction or live info when no full backtest result
+        if let Some(p) = &app.engine.last_future_prediction {
+            let info = format!(
+                "FUTURE BUBBLE PREDICTION (C1 from multi-window JLS/LPPLS)\n\nDate: {}\nPrice: {:.2}\nC1 Confidence: {:.1}% (ensemble {:?}, std {:.1})\nRisk: {} — {}\nMedian predicted critical/peak: {} ({} days ahead)\nProb tc within horizon ({}d): {:.1}%\nValid fits: {}/{} windows\n\n(Use this for 'will there be a bubble peak soon?' research. See README + gemini-data-LPPLS.md)",
+                p.analysis_date, p.current_price, p.bubble_confidence_index, p.ensemble_seeds_used, p.ensemble_std_confidence,
+                p.risk_level, p.risk_description,
+                p.median_predicted_date.map(|d| d.to_string()).unwrap_or("N/A".into()), p.median_days_to_tc.unwrap_or(0),
+                app.engine.config.predict_horizon_days, p.prob_tc_within_horizon * 100.0,
+                p.valid_fits, p.total_windows_tested
+            );
+            let pred_box = Paragraph::new(info)
+                .block(Block::default().title(" FUTURE BUBBLE PREDICTION — extensive C1 + tc (no equity chart in pure prediction mode) ").borders(Borders::ALL))
+                .wrap(Wrap { trim: true });
+            f.render_widget(pred_box, chart_area);
+        } else if let Some(s) = &app.engine.last_live_sentiment {
+            let info = format!(
+                "LIVE CURRENT SENTIMENT (for trading on current LPPLS + C1 now)\n\nAs of: {}  Price: {:.2}\nBubble score: {:.3}\nC1: {:.1}%  Risk: {}\n\nRECOMMENDATION: {}\n\nActionable: {}\nMedian predicted peak: {} (~{}d)\n\n(For live trading signals. Run in 'live' or 'hybrid' mode. Cross-check with other data. Not financial advice.)",
+                s.date, s.current_price, s.bubble_score, s.bubble_confidence, s.risk_level,
+                s.recommendation, s.actionable_note,
+                s.median_predicted_peak.map(|d|d.to_string()).unwrap_or("N/A".into()), s.median_days_to_tc.unwrap_or(0)
+            );
+            let live_box = Paragraph::new(info)
+                .block(Block::default().title(" LIVE CURRENT SENTIMENT — equation + C1 for 'trade now?' ").borders(Borders::ALL))
+                .wrap(Wrap { trim: true });
+            f.render_widget(live_box, chart_area);
+        } else {
+            let placeholder = Paragraph::new(
+                "No simulation results.\n\nPress [F] to fetch... [R] to run (uses random_seed for LPPL multi-start reproducibility).\n\nNEW: Set 'Run mode' field (historical/prediction/live/hybrid), 'Ensemble seeds', 'Predict horizon' then [R].\nFor prediction: see C1% + risk + median tc dates here.\nFor live: see current BUY/SELL/HOLD sentiment + actionable note.\n\nThe RNG seed (and ensemble) controls the random sampling of LPPL nonlinear params (tc/m/omega/phi) for the fit search (needed b/c non-convex opt; fixed seed => reproducible). \n\nCursor (after historical/hybrid run) shows clear RECOMMENDATION: BUY/SELL/HOLD at that date based on final position after score vs thresh (with bias/invert + C1 filter).\n\nCharts (historical): PRICE (colored by regime), BUBBLE SCORE (steps b/c refits), EQUITY vs B&H.\nTweak fields (incl seed/mode) + rerun live.",
+            )
+            .block(Block::default().title(" Visualization — Bubble Indicator + Strict $10k Trade Sim + Future/Live (full user control) ").borders(Borders::ALL))
+            .wrap(Wrap { trim: true });
+            f.render_widget(placeholder, chart_area);
+        }
     }
 
     // Bottom right: Cursor detail + Trade log

@@ -3,6 +3,14 @@
 //! **Isolated logic engine** for the Hyped Log-Periodic Power Law (HLPPL/HLPLL) bubble
 //! detection + walk-forward backtesting strategy.
 //!
+//! Extensive support (2026 updates from gemini LPPLS doc + literature):
+//! - RunMode: HistoricalBacktest (classic equity sim), FutureBubblePrediction (C1 % + tc forecasts for "will bubble peak?"),
+//!   LiveCurrentSentiment (current snapshot for live trading signals), Hybrid.
+//! - Multi-window LPPLS Confidence (C1) with strict JLS filters (m 0.1-0.9, omega 4.5-13, B<0, tc future offset) + ensemble seeds for robustness.
+//! - Standalone prediction + live fns, per-day C1 in signals, risk levels, median tc, prob-within-horizon.
+//! - PositionBias + invert + conf flat/sizing filters work across modes.
+//! Use HlpplEngine + run_with_mode / get_future_prediction / get_live_sentiment for all frontends and library consumers.
+//!
 //! ## For library / engine-only users (recommended for isolation)
 //! ```ignore
 //! use hlpll_backtester::{HlpplEngine, BacktestConfig, fetch_yahoo_history};
@@ -38,11 +46,13 @@ pub mod modules;
 
 // === Clean public API surface for the isolated HLPPL logic engine ===
 
-pub use engine::{HlpplEngine, Trade};
+pub use engine::{CurrentSentiment, HlpplEngine, Trade};
 
-pub use modules::backtest::{BacktestConfig, BacktestResult, DailySignal, PositionBias, run_backtest};
+pub use modules::backtest::{BacktestConfig, BacktestResult, DailySignal, PositionBias, RunMode, run_backtest, FutureBubblePrediction, LiveSentimentSnapshot, run_future_bubble_prediction, compute_live_sentiment};
 pub use modules::data::{bars_to_dataframe, fetch_yahoo_history, load_prices_parquet, PriceBar};
-pub use modules::lppl::{fit_lppl_on_bars, LpplFit, LpplParams};
+pub use modules::lppl::{
+    compute_bubble_confidence, compute_bubble_confidence_ensemble, is_strict_jls_valid, fit_lppl_on_bars, BubbleAnalysisResult, LpplFilterConfig, LpplFit, LpplParams,
+};
 pub use modules::utils::{
     build_equity_series, build_regime_price_segments, build_score_series, export_backtest_artifacts,
     plot_equity_curve, print_summary, save_series_csv, save_signals_csv,

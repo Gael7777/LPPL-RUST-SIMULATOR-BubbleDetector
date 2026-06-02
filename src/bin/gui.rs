@@ -91,6 +91,25 @@ struct HlpplGuiApp {
     random_seed: u64,  // exposed so user can control reproducibility of LPPL random search
 
     track_on_hover: bool, // for live cursor tracker on price chart
+
+    // === NEW EXTENSIVE BUBBLE ANALYSIS CONFIG (multi-window, strict filters, confidence for trading) ===
+    enable_bubble_analysis: bool,
+    analysis_lookback_min: usize,
+    analysis_lookback_max: usize,
+    analysis_step_days: usize,
+    filter_m_min: f64,
+    filter_m_max: f64,
+    filter_omega_min: f64,
+    filter_omega_max: f64,
+    filter_require_b_negative: bool,
+    filter_min_tc_offset_days: usize,
+    use_confidence_for_flat: bool,
+    confidence_flat_threshold: f64,
+
+    // === RUN MODE + ENSEMBLE + PREDICTION (most extensive support for future bubbles + live sentiment) ===
+    run_mode: hlpll_backtester::RunMode,
+    ensemble_seeds_str: String, // comma sep e.g. "42,43,44" for robust C1
+    predict_horizon: usize,
 }
 
 impl HlpplGuiApp {
@@ -161,7 +180,8 @@ impl HlpplGuiApp {
                             let _ = update_tx.send(Update::Error(format!("Fetch failed: {}", e)));
                             continue;
                         }
-                        match eng.run() {
+                        // Use mode-aware run so Prediction/Live/Hybrid populate the right engine fields (future_prediction etc)
+                        match eng.run_with_mode() {
                             Ok(()) => {
                                 let _ = update_tx.send(Update::RunDone { engine: eng });
                             }
@@ -201,6 +221,23 @@ impl HlpplGuiApp {
             invert_signal: false,
             random_seed: 42,
             track_on_hover: true,
+
+            enable_bubble_analysis: true,
+            analysis_lookback_min: 60,
+            analysis_lookback_max: 260,
+            analysis_step_days: 5,
+            filter_m_min: 0.1,
+            filter_m_max: 0.9,
+            filter_omega_min: 4.5,
+            filter_omega_max: 13.0,
+            filter_require_b_negative: true,
+            filter_min_tc_offset_days: 3,
+            use_confidence_for_flat: true,
+            confidence_flat_threshold: 50.0,
+
+            run_mode: hlpll_backtester::RunMode::HistoricalBacktest,
+            ensemble_seeds_str: "42".into(),
+            predict_horizon: 60,
         }
     }
 
@@ -231,6 +268,24 @@ impl HlpplGuiApp {
             position_bias: self.position_bias,
             invert_signal: self.invert_signal,
             random_seed: self.random_seed,
+
+            enable_bubble_analysis: self.enable_bubble_analysis,
+            analysis_lookback_min: self.analysis_lookback_min,
+            analysis_lookback_max: self.analysis_lookback_max,
+            analysis_step_days: self.analysis_step_days,
+            filter_m_min: self.filter_m_min,
+            filter_m_max: self.filter_m_max,
+            filter_omega_min: self.filter_omega_min,
+            filter_omega_max: self.filter_omega_max,
+            filter_require_b_negative: self.filter_require_b_negative,
+            filter_min_tc_offset_days: self.filter_min_tc_offset_days,
+            use_confidence_for_flat: self.use_confidence_for_flat,
+            confidence_flat_threshold: self.confidence_flat_threshold,
+
+            run_mode: self.run_mode,
+            ensemble_seeds: if self.ensemble_seeds_str.trim().is_empty() { vec![] } else { self.ensemble_seeds_str.split(',').filter_map(|s| s.trim().parse().ok()).collect() },
+            predict_horizon_days: self.predict_horizon,
+            use_confidence_for_sizing: false, // UI can add checkbox later
         };
 
         self.busy = true;
@@ -333,6 +388,24 @@ impl HlpplGuiApp {
         self.engine.config.position_bias = self.position_bias;
         self.engine.config.invert_signal = self.invert_signal;
         self.engine.config.random_seed = self.random_seed;
+
+        // NEW bubble analysis extensive settings
+        self.engine.config.enable_bubble_analysis = self.enable_bubble_analysis;
+        self.engine.config.analysis_lookback_min = self.analysis_lookback_min;
+        self.engine.config.analysis_lookback_max = self.analysis_lookback_max;
+        self.engine.config.analysis_step_days = self.analysis_step_days;
+        self.engine.config.filter_m_min = self.filter_m_min;
+        self.engine.config.filter_m_max = self.filter_m_max;
+        self.engine.config.filter_omega_min = self.filter_omega_min;
+        self.engine.config.filter_omega_max = self.filter_omega_max;
+        self.engine.config.filter_require_b_negative = self.filter_require_b_negative;
+        self.engine.config.filter_min_tc_offset_days = self.filter_min_tc_offset_days;
+        self.engine.config.use_confidence_for_flat = self.use_confidence_for_flat;
+        self.engine.config.confidence_flat_threshold = self.confidence_flat_threshold;
+
+        self.engine.config.run_mode = self.run_mode;
+        self.engine.config.ensemble_seeds = if self.ensemble_seeds_str.trim().is_empty() { vec![] } else { self.ensemble_seeds_str.split(',').filter_map(|s| s.trim().parse().ok()).collect() };
+        self.engine.config.predict_horizon_days = self.predict_horizon;
     }
 }
 
@@ -371,6 +444,22 @@ impl eframe::App for HlpplGuiApp {
                     }
                     if ui.button("Test Yahoo API").clicked() && !self.busy {
                         self.trigger_fetch();
+                    }
+                    if ui.button("Run Bubble Analysis (predict/live)").clicked() && !self.busy {
+                        self.sync_engine_from_ui();
+                        // Run analysis in worker or direct; for simplicity direct here (fast enough)
+                        match self.engine.run_bubble_analysis() {
+                            Ok(analysis) => {
+                                self.status = format!(
+                                    "Bubble Analysis: {:.1}% confidence | {} | Median peak ~{}",
+                                    analysis.bubble_confidence_index,
+                                    analysis.risk_level,
+                                    analysis.median_predicted_date.map(|d| d.to_string()).unwrap_or("N/A".into())
+                                );
+                                // For full sentiment, also run get if wanted
+                            }
+                            Err(e) => { self.last_error = Some(e); }
+                        }
                     }
                 });
             });
@@ -433,6 +522,65 @@ impl eframe::App for HlpplGuiApp {
 
                 ui.label("RNG seed (LPPL fits)").on_hover_text("Seed for the random search inside each LPPL fit. Fixed seed (e.g. 42) makes every 'Run Simulation' with identical params produce exactly the same results (fully reproducible). Change it to explore different possible LPPL fits.");
                 ui.add(egui::DragValue::new(&mut self.random_seed).speed(1));
+                ui.end_row();
+
+                // NEW extensive bubble analysis controls (multi-window JLS for confidence index, future prediction, live sentiment)
+                ui.label("Enable Bubble Analysis").on_hover_text("Run multi-window LPPLS sweep with strict filters at run time. Computes Bubble Confidence Index (0-100%), risk level, predicted critical/peak dates for future bubble prediction. Essential for 'live current sentiment'.");
+                ui.checkbox(&mut self.enable_bubble_analysis, "");
+                ui.end_row();
+
+                ui.label("Analysis lookback min/max").on_hover_text("Range of historical window lengths (in trading days) to sweep for the confidence index. E.g. 60 to 260 days. More windows = more robust % valid fits.");
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut self.analysis_lookback_min).speed(5).range(30..=500));
+                    ui.label("/");
+                    ui.add(egui::DragValue::new(&mut self.analysis_lookback_max).speed(5).range(60..=1000));
+                });
+                ui.end_row();
+
+                ui.label("Conf. flat thresh / use for risk").on_hover_text("If enabled and Bubble Confidence > this %, force FLAT (risk mgmt override for high bubble regime). Great for live trading filter on current sentiment.");
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut self.confidence_flat_threshold).speed(1.0).range(0.0..=100.0));
+                    ui.checkbox(&mut self.use_confidence_for_flat, "use");
+                });
+                ui.end_row();
+
+                // === Run mode + ensemble + prediction horizon (extensive new) ===
+                ui.label("Run Mode").on_hover_text("Historical: full backtest+equity (classic). Prediction: pure future tc + C1 % (no equity). Live: current sentiment snapshot for trading now. Hybrid: both.");
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.run_mode, hlpll_backtester::RunMode::HistoricalBacktest, "Historical");
+                    ui.selectable_value(&mut self.run_mode, hlpll_backtester::RunMode::FutureBubblePrediction, "Prediction");
+                    ui.selectable_value(&mut self.run_mode, hlpll_backtester::RunMode::LiveCurrentSentiment, "Live");
+                    ui.selectable_value(&mut self.run_mode, hlpll_backtester::RunMode::HybridAnalysis, "Hybrid");
+                });
+                ui.end_row();
+
+                ui.label("Ensemble seeds (C1 robust)").on_hover_text("Comma-separated seeds for multi-seed C1 average (e.g. 42,43,44). Makes confidence less sensitive to RNG. Leave '42' for single.");
+                ui.text_edit_singleline(&mut self.ensemble_seeds_str);
+                ui.end_row();
+
+                ui.label("Predict horizon (days)").on_hover_text("For prediction reports: 'prob of tc within this many days' from the valid critical times distro.");
+                ui.add(egui::DragValue::new(&mut self.predict_horizon).speed(5).range(5..=365));
+                ui.end_row();
+
+                // Full strict filters (were partially missing in UI)
+                ui.label("JLS m / omega filters").on_hover_text("Strict physics constraints for 'valid bubble' in C1 computation (see gemini-data-LPPLS.md). Only windows meeting all count toward the % confidence.");
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut self.filter_m_min).speed(0.05).range(0.0..=0.99).fixed_decimals(2));
+                    ui.label("<=m<=");
+                    ui.add(egui::DragValue::new(&mut self.filter_m_max).speed(0.05).range(0.0..=0.99).fixed_decimals(2));
+                    ui.label("|");
+                    ui.add(egui::DragValue::new(&mut self.filter_omega_min).speed(0.5).range(0.0..=30.0).fixed_decimals(1));
+                    ui.label("<=w<=");
+                    ui.add(egui::DragValue::new(&mut self.filter_omega_max).speed(0.5).range(0.0..=30.0).fixed_decimals(1));
+                });
+                ui.end_row();
+
+                ui.label("B<0 / tc offset").on_hover_text("B negative = upward super-exp bubble. tc must be at least N days after current for a 'future' prediction.");
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut self.filter_require_b_negative, "B<0");
+                    ui.label("tc +");
+                    ui.add(egui::DragValue::new(&mut self.filter_min_tc_offset_days).speed(1).range(0..=30));
+                });
                 ui.end_row();
             });
 
@@ -507,15 +655,34 @@ impl eframe::App for HlpplGuiApp {
                 }
             });
 
+            // === EXTENSIVE: dedicated Prediction / Live Sentiment panel (C1, tc, risk) ===
+            if let Some(pred) = &self.engine.last_future_prediction {
+                ui.colored_label(if pred.bubble_confidence_index > 50.0 { egui::Color32::RED } else { egui::Color32::GREEN },
+                    format!("PREDICTION: C1 {:.1}% | {} | median tc ~{} ({}d) | P(within {}d) {:.0}% | ensemble {:?}",
+                        pred.bubble_confidence_index, pred.risk_level,
+                        pred.median_predicted_date.map(|d|d.to_string()).unwrap_or("N/A".into()),
+                        pred.median_days_to_tc.unwrap_or(0), self.predict_horizon, pred.prob_tc_within_horizon*100.0, pred.ensemble_seeds_used));
+            }
+            if let Some(snap) = &self.engine.last_live_sentiment {
+                let c = if snap.position > 0.5 { egui::Color32::GREEN } else if snap.position < -0.5 { egui::Color32::RED } else { egui::Color32::GRAY };
+                ui.colored_label(c, format!("LIVE SENTIMENT: {} | C1={:.1}% | {}", snap.recommendation, snap.bubble_confidence, snap.actionable_note));
+            }
+
             ui.separator();
 
-            if result.is_none() {
-                ui.label("No simulation yet. Use the controls on the left and click 'Run Simulation'.");
-                ui.label("The charts below will show the price colored by the strategy's position (the bubble regime), the bubble score vs your thresholds, and the equity curve in dollars.");
+            if result.is_none() && self.engine.last_future_prediction.is_none() && self.engine.last_live_sentiment.is_none() {
+                ui.label("No simulation yet. Use the controls on the left and click 'Run Simulation' (or the predict/live buttons).");
+                ui.label("Choose Run Mode (Historical/Prediction/Live/Hybrid) to control whether you get full equity backtest, future tc bubble forecasts (C1), or live trading sentiment snapshot.");
                 return;
             }
 
-            let res = result.unwrap();
+            let res = match result {
+                Some(r) => r,
+                None => {
+                    ui.label("(Pure prediction or live mode active — charts/equity below require a Historical or Hybrid run. See the prediction panel above for C1, risk level, median tc, and actionable sentiment.)");
+                    return;
+                }
+            };
             let n = res.signals.len();
             let vs = self.view_start.min(n.saturating_sub(1));
             let vl = self.view_len.min(n.saturating_sub(vs)).max(1);

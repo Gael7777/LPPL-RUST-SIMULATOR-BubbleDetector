@@ -557,3 +557,55 @@ MIT / Apache-2.0 (your choice).
 If you use this for research, cite:
 
 > Johns Hopkins preprint (arXiv:2510.10878) — *Detecting Financial Bubbles with the Hyped Log-Periodic Power Law model*
+
+---
+
+## 14. Extensive Run Modes, LPPLS Confidence (C1), Future Bubble Prediction & Live Sentiment (2026 updates)
+
+The project was evolved into the **most complete Rust LPPL research+experimentation platform** after analyzing the new `grok-build-assets/gemini-data-LPPLS.md` (multi-window JLS strict filters, Bubble Confidence Index as % valid fits, tc calendar projection, risk levels LOW/MODERATE/HIGH/CRITICAL, trading dev notes) + independent research (literature from Sornette/JLS, ETH FCO, papers on 2 centuries S&P, Chinese/ crypto bubbles, Imperial thesis backtests of conf+trust strategies, QuantConnect LPPLS examples, GSADF comparisons).
+
+**Is it a good idea?** Yes. LPPLS C1 (fraction of rolling windows meeting 0.1≤m≤0.9, 4.5≤ω≤13, B<0, tc>t+margin + damping) is the literature-standard robust "bubble index". Single fits are noisy; multi-window + ensemble gives reliable early warnings and tc clusters. Papers show ex-ante capture of known bubbles with fewer false positives than alternatives in many cases; trading strategies using C1 (long on positive bubble conf or short risk) have been backtested successfully on assets (with costs/drawdowns). Our "HLPPL" (LPPL + volume hype + return sent) + live daily eps projection + directional bias/invert + C1 risk filter/sizing is a strong practical hybrid addressing gaps noted in the docs (pure LPPL under-emphasizes behavioral). **Caveats from research**: not infallible (regime dependent, window sensitive, past performance != future, high DD possible); best as *one indicator* + risk mgmt. Never sole basis for live capital. The tool now lets you rigorously test all of it reproducibly.
+
+### New capabilities
+- **RunMode** (in BacktestConfig, CLI --mode, GUI radio, TUI):
+  - `historical` (default): classic walk-forward + 10k equity sim + B&H + full signals (C1 per bar if enabled).
+  - `prediction`: pure future bubble prediction at end of data — C1%, risk level, list+median of predicted critical dates (tc), days-to, prob-within-horizon from the valid fits distro. No (or hybrid) equity.
+  - `live`: snapshot "current sentiment" at latest bar for live trading decisions (score + C1 + synthesized BUY/SELL/HOLD rec that respects bias/invert/conf flat/sizing + actionable note on risk).
+  - `hybrid`: both for validation (backtest history of the signal you would have used live).
+- **LPPLS Confidence (C1) & strict filters**: `enable_bubble_analysis`, analysis_lookback min/max/step, filter_m_* , filter_omega_*, filter_b_negative, filter_tc_offset. Matches the gemini Python "enhanced multi-window engine" + JLS table.
+- **Ensemble seeds**: --ensemble-seeds "42,43,44" (or GUI/TUI) for mean/std C1 across independent multi-start searches — much more stable than single seed.
+- **Proportional sizing + risk override**: use_confidence_for_flat (force 0 if C1 high), use_confidence_for_sizing (scale pos by C1/100 clamped).
+- **Prediction horizon**: controls "prob tc in next N days".
+- **Cursor / query recs now include C1**: in all UIs and --query-date, see score + confidence + future peak if avail.
+- Exports: signals still have bubble_confidence; prediction runs print rich report + (in hybrid) the CSVs.
+
+### CLI examples (all features)
+```powershell
+# Historical backtest (with C1 overlay + B&H)
+cargo run --release -- --tickers CAR --start 2022-01-01 --end 2024-12-31 --mode historical --enable-bubble-analysis
+
+# Pure future bubble prediction (C1 + tc cluster) on latest data
+cargo run --release -- --tickers ^NDX --start 2024-01-01 --end 2026-06-03 --mode prediction --ensemble-seeds "42,43,44" --predict-horizon 90 --filter-m-min 0.1 --filter-omega-min 4.5
+
+# Live sentiment for "should I trade this now?"
+cargo run --release -- --tickers AMD --start 2025-01-01 --end 2026-06-03 --mode live --invert --position-bias longonly --use-conf-flat --conf-flat-thresh 65
+
+# Full hybrid (validate the live rule historically + see current pred)
+cargo run --release -- --tickers CAR --mode hybrid --ensemble-seeds 42,43
+```
+
+GUI: left panel now has Run Mode radios + ensemble text + horizon + full JLS m/omega/B<0/tc filters surfaced. Big "PREDICTION" or "LIVE SENTIMENT" callouts above charts. "Run Simulation" respects the chosen mode (uses run_with_mode on engine). Dedicated bubble analysis button still there.
+
+TUI/Explorer: supports via strings (run_mode_str etc); [R]un uses current. Use GUI or CLI for easiest access to prediction/live.
+
+### Using for live trading on current sentiment
+1. Set recent window (e.g. 1-2y data).
+2. Run in `live` or `prediction` mode (or hybrid then look at last).
+3. Read the synthesized RECOMMENDATION (respects your bias/invert/C1 filter) + actionable note + median tc if any.
+4. Cross with fundamentals/news/VIX. The C1 high = "many scales show herding signature" → often risk-off or short candidate per literature.
+
+**This is research tooling, not advice.** Backtests (even reproducible) and C1 forecasts can and do fail. Use for exploration, parameter studies, robustness across seeds/modes/windows. Always paper trade first, size small, have stops.
+
+See `grok-build-assets/gemini-data-LPPLS.md` (the source doc) for the Python blueprint we aligned the Rust C1 to, risk assessment text, and why rolling multi-window + strict filters > single brittle fit.
+
+Enjoy the most extensive LPPL Rust platform! Tweak, predict, backtest live rules, export, repeat.

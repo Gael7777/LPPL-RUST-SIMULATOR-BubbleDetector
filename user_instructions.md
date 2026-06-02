@@ -82,4 +82,30 @@ Utilise le curseur pour "zoomer" sur n'importe quelle date dans tes limites et v
 
 - Exemples de tickers : CAR, AMD, AMTX (actions volatiles qui bougent fort).
 
-C'est tout ! Clone le repo, suis les commandes ci-dessus, et amuse-toi à tweaker les paramètres. Si tu as des questions sur les graphs ou les résultats, lis les CSV générés dans `results/`.
+## Nouvelles fonctionnalités étendues (2026) : prédiction future de bulles + trading live sur sentiment actuel (LPPLS C1)
+
+Le projet a été mis à jour de façon très complète après lecture de `grok-build-assets/gemini-data-LPPLS.md` (modèle LPPLS amélioré, indice de confiance C1 = % de fenêtres valides avec filtres stricts JLS, projection tc dates futures, niveaux de risque).
+
+**Run modes** (GUI : radios "Historical / Prediction / Live / Hybrid" ; CLI --mode ; TUI via champs) :
+- historical : backtest classique + courbe equity 10k vs B&H (comme avant).
+- prediction : prédiction future de bulle (C1 % confiance, niveau risque LOW/HIGH/CRITICAL, dates médianes de "pic critique" tc prédites par les fits valides, probabilité dans horizon).
+- live : snapshot "sentiment actuel" pour trader maintenant (reco BUY/SELL/HOLD qui tient compte de tout + note actionable sur le risque C1 + tc médian si cluster).
+- hybrid : les deux (valide la règle live sur l'historique + donne le snapshot actuel).
+
+**Autres options puissantes** :
+- --ensemble-seeds "42,43,44" (ou GUI/TUI) : moyenne de C1 sur plusieurs seeds → plus robuste.
+- Filtres JLS (m 0.1-0.9, omega 4.5-13, B<0, tc offset) pour le C1 "officiel".
+- use conf for flat / sizing : si C1 haut → force flat ou scale la taille de position (risk management).
+- predict-horizon : pour calculer "proba tc dans les N jours".
+
+**Exemples CLI** :
+```
+.\target\release\hlpll-backtester.exe --tickers CAR --mode prediction --ensemble-seeds "42,43" --predict-horizon 90
+.\target\release\hlpll-backtester.exe --tickers AMD --mode live --invert --use-conf-flat
+```
+
+Dans GUI : choisis le mode, remplis ensemble/horizon/filtres, Run Simulation → le panneau en haut affiche C1 + tc médian + reco live si pertinent. Les graphs restent pour les runs historical/hybrid.
+
+**Interprétation rapide (d'après la doc gemini + littérature)** : C1 >75% = CRITICAL (herd extrême, pic probable proche) ; 45-75 HIGH ; etc. Utilise pour alerte risque ou pour shorter les bulles (avec invert + shortonly). Toujours croiser avec autres signaux. Ce n'est PAS un conseil financier — outil de recherche extensif et reproductible (seed fixe).
+
+C'est tout ! Clone le repo, suis les commandes ci-dessus, et amuse-toi à tweaker les paramètres. Si tu as des questions sur les graphs ou les résultats, lis les CSV générés dans `results/`. (Et le gros README.md pour la théorie + refs.)

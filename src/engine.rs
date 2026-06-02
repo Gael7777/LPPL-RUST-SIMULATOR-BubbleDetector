@@ -10,9 +10,27 @@
 
 use chrono::NaiveDate;
 
-use crate::modules::backtest::{BacktestConfig, BacktestResult, run_backtest};
+use crate::modules::backtest::{BacktestConfig, BacktestResult, run_backtest, run_future_bubble_prediction, compute_live_sentiment, FutureBubblePrediction, LiveSentimentSnapshot, RunMode};
 use crate::modules::data::{fetch_yahoo_history, PriceBar};
+use crate::modules::lppl::{compute_bubble_confidence, BubbleAnalysisResult, LpplFilterConfig};
 use crate::modules::utils::export_backtest_artifacts;
+
+/// Snapshot of "current sentiment" for live trading or at a specific date.
+/// Combines traditional bubble_score + the new multi-window LPPLS confidence index (C1).
+/// The recommendation incorporates bias, invert, confidence filter, and run mode context.
+/// Extended for future prediction use (tc, days to peak, risk).
+#[derive(Clone, Debug)]
+pub struct CurrentSentiment {
+    pub date: NaiveDate,
+    pub bubble_score: f64,
+    pub bubble_confidence: f64, // 0-100% from extensive multi-window analysis (C1)
+    pub position: f64,
+    pub recommendation: String, // "BUY / GO LONG", "SELL / GO SHORT", "HOLD / FLAT"
+    pub risk_level: String,
+    pub median_predicted_peak: Option<NaiveDate>,
+    /// From RunMode-aware: for prediction modes this carries extra context
+    pub mode_note: String,
+}
 
 /// A single completed (or open-to-end) trade leg, derived strictly from the
 /// strategy's position changes and the equity curve. Used by both the TUI and
@@ -63,6 +81,10 @@ pub struct HlpplEngine {
 
     /// Human readable status of the last fetch attempt (for UIs).
     pub fetch_status: String,
+
+    // Extensive new: dedicated prediction & live sentiment results (populated by mode-aware runs)
+    pub last_future_prediction: Option<FutureBubblePrediction>,
+    pub last_live_sentiment: Option<LiveSentimentSnapshot>,
 }
 
 impl HlpplEngine {
@@ -83,6 +105,8 @@ impl HlpplEngine {
             result: None,
             trades: vec![],
             fetch_status: "No data loaded.".to_string(),
+            last_future_prediction: None,
+            last_live_sentiment: None,
         }
     }
 
@@ -114,6 +138,8 @@ impl HlpplEngine {
         // Invalidate previous result when data changes
         self.result = None;
         self.trades.clear();
+        self.last_future_prediction = None;
+        self.last_live_sentiment = None;
 
         Ok(n)
     }
@@ -122,9 +148,12 @@ impl HlpplEngine {
     /// **strictly** using the same code path as the classic backtester
     /// (`run_backtest`).
     ///
+    /// This forces HistoricalBacktest semantics for backward compat (full equity, trades).
+    /// For future prediction or live sentiment, prefer `run_with_mode` or the dedicated getters.
     /// Requires that `fetch()` has succeeded. Recomputes the derived `trades`
     /// list for the current `initial_capital`.
     pub fn run(&mut self) -> Result<(), String> {
+        self.config.run_mode = RunMode::HistoricalBacktest;
         let bars = self
             .bars
             .as_ref()
@@ -141,6 +170,42 @@ impl HlpplEngine {
         let res = run_backtest(&self.ticker, bars, &self.config)?;
         self.result = Some(res);
         self.recompute_trades();
+        Ok(())
+    }
+
+    /// Run according to the engine's current `config.run_mode`.
+    /// - Historical / Hybrid: full backtest (result + trades populated)
+    /// - FutureBubblePrediction: populates last_future_prediction (and result if hybrid)
+    /// - LiveCurrentSentiment: populates last_live_sentiment
+    /// Always safe after fetch().
+    pub fn run_with_mode(&mut self) -> Result<(), String> {
+        let bars = self
+            .bars
+            .as_ref()
+            .ok_or_else(|| "No price data. Call fetch() first.".to_string())?;
+
+        match self.config.run_mode {
+            RunMode::HistoricalBacktest => {
+                if bars.len() < self.config.lookback_days + 30 {
+                    return Err(format!("Not enough bars (have {}, need at least {})", bars.len(), self.config.lookback_days + 30));
+                }
+                let res = run_backtest(&self.ticker, bars, &self.config)?;
+                self.result = Some(res);
+                self.recompute_trades();
+            }
+            RunMode::FutureBubblePrediction | RunMode::HybridAnalysis => {
+                let (pred, maybe_res) = run_future_bubble_prediction(&self.ticker, bars, &self.config)?;
+                self.last_future_prediction = Some(pred);
+                if let Some(r) = maybe_res {
+                    self.result = Some(r);
+                    self.recompute_trades();
+                }
+            }
+            RunMode::LiveCurrentSentiment => {
+                let snap = compute_live_sentiment(&self.ticker, bars, &self.config)?;
+                self.last_live_sentiment = Some(snap);
+            }
+        }
         Ok(())
     }
 
@@ -231,5 +296,150 @@ impl HlpplEngine {
     /// Helper for UIs: get a reference to the signals for the current result (if any).
     pub fn signals(&self) -> Option<&[crate::modules::backtest::DailySignal]> {
         self.result.as_ref().map(|r| r.signals.as_slice())
+    }
+
+    // === NEW EXTENSIVE FEATURES FOR BUBBLE PREDICTION & LIVE SENTIMENT ===
+
+    /// Run the advanced multi-window LPPLS/HLPPL Bubble Confidence analysis on the latest data.
+    /// This implements the rolling window sweep with strict JLS filters from the documentation.
+    /// Ideal for "predicting future bubbles" (gives median predicted peak date) and
+    /// "current sentiment" at the end of the series (confidence % + risk level).
+    /// Updates no internal result, just returns the analysis. Use alongside or instead of run().
+    pub fn run_bubble_analysis(&mut self) -> Result<BubbleAnalysisResult, String> {
+        if self.bars.is_none() {
+            self.fetch()?;
+        }
+        let bars = self.bars.as_ref().unwrap();
+        if bars.is_empty() {
+            return Err("No bars loaded for bubble analysis".into());
+        }
+        let current_idx = bars.len() - 1;
+
+        let filter = LpplFilterConfig {
+            m_min: self.config.filter_m_min,
+            m_max: self.config.filter_m_max,
+            omega_min: self.config.filter_omega_min,
+            omega_max: self.config.filter_omega_max,
+            require_b_negative: self.config.filter_require_b_negative,
+            min_tc_offset_days: self.config.filter_min_tc_offset_days,
+        };
+
+        compute_bubble_confidence(
+            bars,
+            current_idx,
+            self.config.analysis_lookback_min,
+            self.config.analysis_lookback_max,
+            self.config.analysis_step_days,
+            &filter,
+            self.config.random_seed,
+        )
+    }
+
+    /// Get a clean "Current Sentiment" snapshot for live trading decisions or at the end date.
+    /// This runs the bubble analysis (if not cached) and combines with the last computed
+    /// bubble_score / position from a prior run() if available.
+    /// The recommendation respects all config (bias, invert, confidence flat threshold, etc.).
+    /// Perfect for "live trading on current sentiment with this equation".
+    /// Now mode-aware via last_live or last_prediction if run_with_mode was used.
+    pub fn get_current_sentiment(&mut self) -> Result<CurrentSentiment, String> {
+        // Prefer rich live snapshot if available
+        if let Some(snap) = &self.last_live_sentiment {
+            return Ok(CurrentSentiment {
+                date: snap.date,
+                bubble_score: snap.bubble_score,
+                bubble_confidence: snap.bubble_confidence,
+                position: snap.position,
+                recommendation: snap.recommendation.clone(),
+                risk_level: snap.risk_level.clone(),
+                median_predicted_peak: snap.median_predicted_peak,
+                mode_note: snap.actionable_note.clone(),
+            });
+        }
+        if let Some(pred) = &self.last_future_prediction {
+            let rec = if pred.bubble_confidence_index > self.config.confidence_flat_threshold {
+                "HOLD / FLAT (high C1 bubble risk from prediction)"
+            } else if pred.risk_level.contains("CRITICAL") || pred.risk_level.contains("HIGH") {
+                "CAUTION / MONITOR (elevated future bubble probability)"
+            } else {
+                "NEUTRAL (no strong future tc cluster)"
+            };
+            return Ok(CurrentSentiment {
+                date: pred.analysis_date,
+                bubble_score: 0.0,
+                bubble_confidence: pred.bubble_confidence_index,
+                position: 0.0,
+                recommendation: rec.to_string(),
+                risk_level: pred.risk_level.clone(),
+                median_predicted_peak: pred.median_predicted_date,
+                mode_note: format!("Future pred: median peak ~{:?} (conf {:.1}%)", pred.median_predicted_date, pred.bubble_confidence_index),
+            });
+        }
+
+        let analysis = self.run_bubble_analysis()?;
+
+        let (score, pos, base_rec) = if let Some(res) = &self.result {
+            if let Some(last) = res.signals.last() {
+                let r = if last.position > 0.5 {
+                    "BUY / GO LONG"
+                } else if last.position < -0.5 {
+                    "SELL / GO SHORT"
+                } else {
+                    "HOLD / FLAT"
+                };
+                (last.bubble_score, last.position, r.to_string())
+            } else {
+                (0.0, 0.0, "HOLD / FLAT".to_string())
+            }
+        } else {
+            (0.0, 0.0, "HOLD / FLAT".to_string())
+        };
+
+        // Apply confidence filter for final rec if configured
+        let final_rec = if self.config.use_confidence_for_flat && analysis.bubble_confidence_index > self.config.confidence_flat_threshold {
+            "HOLD / FLAT (high bubble confidence - risk management override)".to_string()
+        } else {
+            base_rec
+        };
+
+        Ok(CurrentSentiment {
+            date: analysis.analysis_date,
+            bubble_score: score,
+            bubble_confidence: analysis.bubble_confidence_index,
+            position: pos,
+            recommendation: final_rec,
+            risk_level: analysis.risk_level.clone(),
+            median_predicted_peak: analysis.median_predicted_date,
+            mode_note: if self.config.run_mode != RunMode::HistoricalBacktest {
+                format!("Mode: {:?} | C1={:.1}%", self.config.run_mode, analysis.bubble_confidence_index)
+            } else { "".into() },
+        })
+    }
+
+    /// Run (or re-run) the dedicated future bubble prediction using current config (ensemble, horizons, filters).
+    /// Populates `last_future_prediction`. For pure prediction or hybrid.
+    pub fn get_future_prediction(&mut self) -> Result<FutureBubblePrediction, String> {
+        if self.bars.is_none() {
+            self.fetch()?;
+        }
+        let bars = self.bars.as_ref().unwrap();
+        let (pred, maybe_res) = run_future_bubble_prediction(&self.ticker, bars, &self.config)?;
+        self.last_future_prediction = Some(pred.clone());
+        if let Some(r) = maybe_res {
+            self.result = Some(r);
+            self.recompute_trades();
+        }
+        Ok(pred)
+    }
+
+    /// Compute a live/current sentiment snapshot for "trade now" decisions.
+    /// Populates `last_live_sentiment`. Uses the latest bar as "today".
+    pub fn get_live_sentiment(&mut self) -> Result<LiveSentimentSnapshot, String> {
+        if self.bars.is_none() {
+            self.fetch()?;
+        }
+        let bars = self.bars.as_ref().unwrap();
+        let snap = compute_live_sentiment(&self.ticker, bars, &self.config)?;
+        self.last_live_sentiment = Some(snap.clone());
+        Ok(snap)
     }
 }

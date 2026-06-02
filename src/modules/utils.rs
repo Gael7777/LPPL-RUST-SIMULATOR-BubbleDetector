@@ -46,6 +46,7 @@ pub fn save_signals_csv(
     let bubble_score: Vec<f64> = signals.iter().map(|s| s.bubble_score).collect();
     let position: Vec<f64> = signals.iter().map(|s| s.position).collect();
     let trade: Vec<i32> = signals.iter().map(|s| if s.trade { 1 } else { 0 }).collect();
+    let bubble_confidence: Vec<f64> = signals.iter().map(|s| s.bubble_confidence).collect();
 
     let mut df = DataFrame::new(vec![
         Column::new("date".into(), date_str),
@@ -59,6 +60,7 @@ pub fn save_signals_csv(
         Column::new("bubble_score".into(), bubble_score),
         Column::new("position".into(), position),
         Column::new("trade".into(), trade),
+        Column::new("bubble_confidence".into(), bubble_confidence),
     ])?;
     let mut file = std::fs::File::create(path)?;
     CsvWriter::new(&mut file).finish(&mut df)?;
@@ -85,6 +87,9 @@ pub fn print_summary(result: &crate::modules::backtest::BacktestResult) {
             "HOLD / NEUTRAL (flat)"
         };
         println!("Final recommendation at {}: {}", last.date, rec);
+        if last.bubble_confidence > 0.0 {
+            println!("Final Bubble Confidence Index: {:.1}% (multi-window LPPLS herding measure)", last.bubble_confidence);
+        }
     }
 }
 
