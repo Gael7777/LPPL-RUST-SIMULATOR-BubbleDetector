@@ -1,9 +1,34 @@
 use crate::modules::bubble_score::{compute_bubble_score, normalize_last_residual};
 use crate::modules::data::PriceBar;
 use crate::modules::hype::compute_volume_hype;
-use crate::modules::lppl::fit_lppl_on_bars;
+use crate::modules::lppl::{fit_lppl_on_bars, LpplParams};
 use crate::modules::sentiment::compute_simple_sentiment;
 use chrono::NaiveDate;
+
+/// Internal: last fitted LPPL model, used to "project" a live eps_norm on days when we do not
+/// perform a full (expensive) re-fit. This is a key improvement for responsiveness:
+/// the expensive nonlinear search for (tc, m, omega, phi) happens only every `refit_every` days,
+/// but every day we re-measure the *current* deviation of today's log-price from the last
+/// fitted curve, and we refresh hype/sentiment with the latest bar. This reduces the staleness
+/// that was previously causing the strategy to stay in a position for many days after market
+/// regime changed.
+struct LiveModel {
+    params: LpplParams,
+    residual_std: f64,
+    t_end: f64,
+    refit_i: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PositionBias {
+    /// Can take both long and short positions based on the sign/magnitude of the bubble score.
+    #[default]
+    LongShort,
+    /// Long-only version: treat negative scores as "flat". Useful for "detect higher-going momentum".
+    LongOnly,
+    /// Short-only version: treat positive scores as "flat". Useful for "detect lower-going momentum".
+    ShortOnly,
+}
 
 #[derive(Debug, Clone)]
 pub struct BacktestConfig {
@@ -13,6 +38,15 @@ pub struct BacktestConfig {
     pub short_threshold: f64,   // bubble_score < -this => short
     pub cost_bps: f64,          // round-trip cost in basis points (e.g. 10 = 0.10%)
     pub max_position: f64,      // 1.0 = fully invested long/short
+
+    /// Controls whether the strategy is allowed to go long, short, or both.
+    /// Lets the user run "long only momentum" or "short only" variants of the bubble signal.
+    pub position_bias: PositionBias,
+
+    /// If true, flip the meaning of the score: high positive bubble_score is interpreted as
+    /// "overextended / bubble risk" (favor short or flat instead of long). This is often more
+    /// aligned with the original "bubble detection" literature (high score = danger of crash).
+    pub invert_signal: bool,
 }
 
 impl Default for BacktestConfig {
@@ -24,6 +58,8 @@ impl Default for BacktestConfig {
             short_threshold: 0.8,
             cost_bps: 12.0,
             max_position: 1.0,
+            position_bias: PositionBias::LongShort,
+            invert_signal: false,
         }
     }
 }
@@ -50,6 +86,9 @@ pub struct BacktestResult {
     pub n_days: usize,
     pub signals: Vec<DailySignal>,
     pub equity: Vec<f64>,
+    /// Buy & Hold equity curve (same length/alignment as `equity`), scaled to same starting capital as the strategy.
+    /// Plotted in the GUI for direct visual comparison.
+    pub bh_equity: Vec<f64>,
     pub total_return: f64,
     pub annualized_return: f64,
     pub sharpe: f64,
@@ -76,81 +115,109 @@ pub fn run_backtest(
 
     let n = bars.len();
     let mut signals: Vec<DailySignal> = Vec::with_capacity(n);
-    let mut equity = vec![1.0]; // start with $1
+    let mut equity = vec![1.0];
+    let mut bh_equity = vec![1.0];
     let mut position: f64 = 0.0;
     let mut num_trades = 0usize;
-    let cost = cfg.cost_bps / 10000.0; // one-way for simplicity; adjust if roundtrip
+    let cost = cfg.cost_bps / 10000.0;
 
     let mut daily_rets: Vec<f64> = Vec::new();
     let mut bh_rets: Vec<f64> = Vec::new();
 
     let mut last_signal_date = bars[0].date;
 
+    let mut live_model: Option<LiveModel> = None;
+
     for i in cfg.lookback_days..n {
-        let do_refit = (i - cfg.lookback_days) % cfg.refit_every == 0;
+        let do_refit = (i - cfg.lookback_days) % cfg.refit_every == 0 || live_model.is_none();
 
         let mut bubble_score = 0.0;
         let mut eps_norm = 0.0;
         let mut hype_volume = 0.0;
         let mut sentiment = 0.0;
 
+        // Always compute *fresh* hype and sentiment using the most recent data up to bar i.
+        // This makes the non-LPPL components live every day (cheap to do).
+        {
+            let hype_w = 60usize;
+            let hstart = i.saturating_sub(hype_w);
+            let vol_win: Vec<f64> = bars[hstart..=i].iter().map(|b| b.volume).collect();
+            let hvals = compute_volume_hype(&vol_win, hype_w);
+            hype_volume = *hvals.last().unwrap_or(&0.0);
+
+            let ret_win: Vec<f64> = bars[hstart..=i]
+                .windows(2)
+                .map(|w| {
+                    let p = w[0].adj_close;
+                    if p > 0.0 { w[1].adj_close / p - 1.0 } else { 0.0 }
+                })
+                .collect();
+            let svals = compute_simple_sentiment(&ret_win);
+            sentiment = *svals.last().unwrap_or(&0.0);
+        }
+
         if do_refit {
-            // Fit LPPL on the window [i-lookback .. i)
+            // Full (expensive) LPPL re-fit + historical eps_norm from the fit window.
             match fit_lppl_on_bars(bars, i - cfg.lookback_days, i) {
                 Ok(fit) => {
                     eps_norm = normalize_last_residual(&fit.residuals);
 
-                    // Hype from volume in same window
-                    let vol_slice: Vec<f64> = bars[i - cfg.lookback_days..i]
-                        .iter()
-                        .map(|b| b.volume)
-                        .collect();
-                    let hype_vals = compute_volume_hype(&vol_slice, 60);
-                    hype_volume = *hype_vals.last().unwrap_or(&0.0);
+                    // Compute the std used for normalization so we can project later.
+                    let nres = fit.residuals.len();
+                    let m: f64 = fit.residuals.iter().sum::<f64>() / nres as f64;
+                    let v: f64 = fit.residuals.iter().map(|r| (r - m).powi(2)).sum::<f64>() / nres as f64;
+                    let rstd = (v + 1e-12).sqrt();
 
-                    // Sentiment proxy from daily returns in same window.
-                    let ret_slice: Vec<f64> = bars[i - cfg.lookback_days..i]
-                        .windows(2)
-                        .map(|w| {
-                            let prev = w[0].adj_close;
-                            let curr = w[1].adj_close;
-                            if prev > 0.0 {
-                                (curr / prev) - 1.0
-                            } else {
-                                0.0
-                            }
-                        })
-                        .collect();
-                    let sent_vals = compute_simple_sentiment(&ret_slice);
-                    sentiment = *sent_vals.last().unwrap_or(&0.0);
+                    live_model = Some(LiveModel {
+                        params: fit.params,
+                        residual_std: rstd,
+                        t_end: (fit.n_points.saturating_sub(1)) as f64,
+                        refit_i: i,
+                    });
 
-                    bubble_score = compute_bubble_score(
-                        eps_norm,
-                        hype_volume,
-                        sentiment,
-                        0.7, // alpha1
-                        0.3, // alpha2
-                    );
+                    bubble_score = compute_bubble_score(eps_norm, hype_volume, sentiment, 0.7, 0.3);
                 }
                 Err(e) => {
                     log::warn!("LPPL fit failed at {} for {}: {}", bars[i].date, ticker, e);
                     bubble_score = 0.0;
                 }
             }
-        } else if let Some(prev) = signals.last() {
-            bubble_score = prev.bubble_score;
-            eps_norm = prev.eps_norm;
-            hype_volume = prev.hype_volume;
-            sentiment = prev.sentiment;
+        } else if let Some(m) = &live_model {
+            // === Key mathematical improvement for accuracy / lower staleness ===
+            // Instead of freezing the entire score (including the LPPL mispricing) for `refit_every` days,
+            // we keep the *last fitted curve shape* (tc,m,omega,phi,A,B,C) and every day we re-evaluate
+            // the *current* residual of today's log-price against that fixed curve, using a forward time index.
+            // Hype and sentiment are already refreshed above with today's bar.
+            // This gives a "live" bubble_score every day while only paying the cost of the heavy random
+            // search + OLS periodically. The signal reacts much faster to price action after the last model fit.
+            let dt = (i - m.refit_i) as f64;
+            let t = m.t_end + dt;
+            let logp = (bars[i].adj_close.max(0.01)).ln();
+            let fitted = m.params.predict_log_price(t);
+            let resid = logp - fitted;
+            eps_norm = resid / m.residual_std;
+
+            bubble_score = compute_bubble_score(eps_norm, hype_volume, sentiment, 0.7, 0.3);
+        } else {
+            // fallback (should not happen)
+            bubble_score = 0.0;
         }
 
-        // Decide new position
-        let target_pos = if bubble_score > cfg.long_threshold {
+        // Decide new position, applying invert + bias
+        let raw = if bubble_score > cfg.long_threshold {
             cfg.max_position
         } else if bubble_score < -cfg.short_threshold {
             -cfg.max_position
         } else {
             0.0
+        };
+
+        let mut target_pos = if cfg.invert_signal { -raw } else { raw };
+
+        target_pos = match cfg.position_bias {
+            PositionBias::LongOnly => target_pos.max(0.0),
+            PositionBias::ShortOnly => target_pos.min(0.0),
+            PositionBias::LongShort => target_pos,
         };
 
         let trade = (target_pos - position).abs() > 1e-6;
@@ -174,6 +241,10 @@ pub fn run_backtest(
             }
             bh_rets.push(ret);
             daily_rets.push(daily_ret);
+
+            // B&H equity (for plotting comparison)
+            let bh_new = *bh_equity.last().unwrap_or(&1.0) * (1.0 + ret);
+            bh_equity.push(bh_new);
         }
 
         let new_equity = equity.last().copied().unwrap_or(1.0) * (1.0 + daily_ret);
@@ -249,6 +320,7 @@ pub fn run_backtest(
         n_days: signals.len(),
         signals,
         equity,
+        bh_equity,
         total_return,
         annualized_return: ann_return,
         sharpe,

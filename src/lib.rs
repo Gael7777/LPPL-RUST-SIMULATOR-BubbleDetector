@@ -40,7 +40,7 @@ pub mod modules;
 
 pub use engine::{HlpplEngine, Trade};
 
-pub use modules::backtest::{BacktestConfig, BacktestResult, DailySignal, run_backtest};
+pub use modules::backtest::{BacktestConfig, BacktestResult, DailySignal, PositionBias, run_backtest};
 pub use modules::data::{bars_to_dataframe, fetch_yahoo_history, load_prices_parquet, PriceBar};
 pub use modules::lppl::{fit_lppl_on_bars, LpplFit, LpplParams};
 pub use modules::utils::{

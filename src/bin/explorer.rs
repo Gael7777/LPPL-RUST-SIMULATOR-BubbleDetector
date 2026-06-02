@@ -103,6 +103,7 @@ impl App {
             short_threshold: short_t,
             cost_bps: cost,
             max_position: 1.0,
+            ..Default::default()
         };
 
         let engine = HlpplEngine::new(&ticker, start, end, cfg, cap);
@@ -237,6 +238,7 @@ impl App {
             short_threshold: short_t,
             cost_bps: cost,
             max_position: 1.0,
+            ..Default::default()
         };
 
         // Sync into the separated engine (this is the important modular step)

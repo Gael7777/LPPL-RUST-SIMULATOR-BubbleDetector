@@ -72,6 +72,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         short_threshold: args.short_thresh,
         cost_bps: args.cost_bps as f64,
         max_position: 1.0,
+        ..Default::default()
     };
 
     info!(

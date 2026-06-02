@@ -13,7 +13,7 @@
 
 use chrono::NaiveDate;
 use eframe::egui;
-use egui_plot::{HLine, Line, Plot, PlotPoints, VLine};
+use egui_plot::{GridMark, HLine, Line, Plot, PlotPoints, VLine};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 
@@ -84,6 +84,10 @@ struct HlpplGuiApp {
 
     /// Whether the help / legend / explanation window is open
     show_help: bool,
+
+    // New strategy mode controls (exposed nicely in the UI)
+    position_bias: hlpll_backtester::PositionBias,
+    invert_signal: bool,
 }
 
 impl HlpplGuiApp {
@@ -111,6 +115,7 @@ impl HlpplGuiApp {
             short_threshold: short_thresh,
             cost_bps,
             max_position: 1.0,
+            ..Default::default()
         };
 
         let engine = HlpplEngine::new(&ticker, start, end, cfg, initial_capital);
@@ -189,6 +194,8 @@ impl HlpplGuiApp {
             view_start: 0,
             view_len: 400,
             show_help: false,
+            position_bias: hlpll_backtester::PositionBias::LongShort,
+            invert_signal: false,
         }
     }
 
@@ -216,6 +223,8 @@ impl HlpplGuiApp {
             short_threshold: self.short_thresh,
             cost_bps: self.cost_bps,
             max_position: 1.0,
+            position_bias: self.position_bias,
+            invert_signal: self.invert_signal,
         };
 
         self.busy = true;
@@ -313,6 +322,10 @@ impl HlpplGuiApp {
         self.engine.config.short_threshold = self.short_thresh;
         self.engine.config.cost_bps = self.cost_bps;
         self.engine.initial_capital = self.initial_capital;
+
+        // New modes
+        self.engine.config.position_bias = self.position_bias;
+        self.engine.config.invert_signal = self.invert_signal;
     }
 }
 
@@ -395,6 +408,20 @@ impl eframe::App for HlpplGuiApp {
 
                 ui.label("Initial Capital $").on_hover_text("Starting portfolio $ for the simulation. All PnL and equity numbers are scaled to this value.");
                 ui.add(egui::DragValue::new(&mut self.initial_capital).speed(1000.0).range(1000.0..=10_000_000.0));
+                ui.end_row();
+
+                // New: strategy mode controls for "long only", "short only", invert etc.
+                ui.label("Position mode").on_hover_text("LongOnly: never short (good for detecting higher-going momentum using positive bubble scores). ShortOnly: never long. LongShort = classic.");
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.position_bias, hlpll_backtester::PositionBias::LongShort, "L/S");
+                    ui.selectable_value(&mut self.position_bias, hlpll_backtester::PositionBias::LongOnly, "Long only");
+                    ui.selectable_value(&mut self.position_bias, hlpll_backtester::PositionBias::ShortOnly, "Short only");
+                });
+                ui.end_row();
+
+                ui.label("");
+                ui.checkbox(&mut self.invert_signal, "Invert (high score = danger)")
+                    .on_hover_text("If checked, a high positive bubble score is treated as 'overextended / crash risk' and produces a negative (short) raw signal. Often more in line with the original bubble-detection literature than pure momentum continuation.");
                 ui.end_row();
             });
 
@@ -529,7 +556,8 @@ impl eframe::App for HlpplGuiApp {
             // Helper to create a date formatter closure for the current view (used by all three plots)
             let make_date_formatter = || {
                 let dates = Arc::clone(&view_dates);
-                move |x: f64, _range: &std::ops::RangeInclusive<f64>| -> String {
+                move |mark: GridMark, _range: &std::ops::RangeInclusive<f64>| -> String {
+                    let x = mark.value;
                     let i = x.round() as usize;
                     dates.get(i).cloned().unwrap_or_else(|| format!("{:.0}", x))
                 }
@@ -603,9 +631,21 @@ impl eframe::App for HlpplGuiApp {
                     });
             }
 
-            // === 3. EQUITY CURVE ===
-            ui.strong("3. Portfolio Equity ($) — result of strictly following every position + costs, scaled to your Initial Capital. Compare final value & drawdowns to Buy & Hold.");
+            // === 3. EQUITY CURVE (with Buy & Hold overlay for comparison) ===
+            ui.strong("3. Portfolio Equity ($) — cyan = strategy (your rules + costs). Gray = Buy & Hold (same security, no timing). Use this to judge if the bubble signal added value.");
             if self.show_equity {
+                // bh_pts use the same relative x (formatter will turn them into dates) and the bh_equity from the improved engine
+                let bh_pts: Vec<(f64, f64)> = {
+                    let bh = &res.bh_equity;
+                    let v_end = vs + vl;
+                    (vs..v_end)
+                        .filter_map(|k| {
+                            let x = (k - vs) as f64;
+                            bh.get(k + 1).map(|&e| (x, e * self.engine.initial_capital))
+                        })
+                        .collect()
+                };
+
                 Plot::new("equity_plot")
                     .height(130.0)
                     .allow_drag(false)
@@ -619,7 +659,16 @@ impl eframe::App for HlpplGuiApp {
                     .show(ui, |plot_ui| {
                         if !eq_pts.is_empty() {
                             let pts: Vec<[f64; 2]> = eq_pts.into_iter().map(|(x, y)| [x, y]).collect();
-                            plot_ui.line(Line::new(PlotPoints::from(pts)).name("$ Equity (your capital)").color(egui::Color32::from_rgb(0, 200, 255)));
+                            plot_ui.line(Line::new(PlotPoints::from(pts)).name("$ Equity (strategy)").color(egui::Color32::from_rgb(0, 200, 255)));
+                        }
+                        if !bh_pts.is_empty() {
+                            let pts: Vec<[f64; 2]> = bh_pts.into_iter().map(|(x, y)| [x, y]).collect();
+                            plot_ui.line(
+                                Line::new(PlotPoints::from(pts))
+                                    .name("Buy & Hold (comparison)")
+                                    .color(egui::Color32::from_rgb(170, 170, 170))
+                                    .width(1.5),
+                            );
                         }
                         let cur_x = (self.selected_idx.saturating_sub(vs)) as f64;
                         plot_ui.vline(VLine::new(cur_x).color(egui::Color32::YELLOW).width(1.5).name("Cursor"));
