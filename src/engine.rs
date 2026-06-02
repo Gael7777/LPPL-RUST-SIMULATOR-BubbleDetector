@@ -40,7 +40,8 @@ pub struct Trade {
 ///     "CAR",
 ///     NaiveDate::from_ymd_opt(2023,1,1).unwrap(),
 ///     NaiveDate::from_ymd_opt(2024,12,31).unwrap(),
-///     BacktestConfig { lookback_days: 180, ..Default::default() },
+///     BacktestConfig { lookback_days: 180, random_seed: 42, ..Default::default() },
+///     // random_seed makes LPPL fits (and thus the whole simulation) reproducible.
 ///     10_000.0,
 /// );
 /// eng.fetch()?;

@@ -46,6 +46,10 @@ struct Args {
     /// Output directory for CSVs and plots
     #[arg(long, default_value = "results")]
     outdir: String,
+
+    /// Random seed for LPPL fitting (fixed seed makes runs reproducible)
+    #[arg(long, default_value_t = 42)]
+    random_seed: u64,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -72,6 +76,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         short_threshold: args.short_thresh,
         cost_bps: args.cost_bps as f64,
         max_position: 1.0,
+        random_seed: args.random_seed,
         ..Default::default()
     };
 

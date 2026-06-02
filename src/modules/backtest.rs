@@ -47,6 +47,12 @@ pub struct BacktestConfig {
     /// "overextended / bubble risk" (favor short or flat instead of long). This is often more
     /// aligned with the original "bubble detection" literature (high score = danger of crash).
     pub invert_signal: bool,
+
+    /// Seed for the random number generator used in the LPPL multi-start fitting.
+    /// Using a fixed seed (default 42) makes every run with the same inputs 100% reproducible
+    /// (same fits → same scores → same positions → same equity curve).
+    /// Change the seed if you want different random explorations of the parameter space.
+    pub random_seed: u64,
 }
 
 impl Default for BacktestConfig {
@@ -60,6 +66,7 @@ impl Default for BacktestConfig {
             max_position: 1.0,
             position_bias: PositionBias::LongShort,
             invert_signal: false,
+            random_seed: 42,
         }
     }
 }
@@ -158,7 +165,7 @@ pub fn run_backtest(
 
         if do_refit {
             // Full (expensive) LPPL re-fit + historical eps_norm from the fit window.
-            match fit_lppl_on_bars(bars, i - cfg.lookback_days, i) {
+            match fit_lppl_on_bars(bars, i - cfg.lookback_days, i, cfg.random_seed) {
                 Ok(fit) => {
                     eps_norm = normalize_last_residual(&fit.residuals);
 

@@ -31,7 +31,7 @@ use hlpll_backtester::engine::{HlpplEngine, Trade};
 use hlpll_backtester::modules::backtest::{BacktestConfig, BacktestResult, DailySignal};
 use hlpll_backtester::modules::data::PriceBar;
 
-const NUM_FIELDS: usize = 9;
+const NUM_FIELDS: usize = 10;
 
 struct App {
     // --- Editable parameter strings (UI source of truth for the form) ---
@@ -44,6 +44,7 @@ struct App {
     short_str: String,
     cost_str: String,
     capital_str: String,
+    random_seed_str: String,
 
     focused: usize, // 0..NUM_FIELDS-1
 
@@ -85,6 +86,7 @@ impl App {
         let short_str = "0.65".to_string();
         let cost_str = "8".to_string();
         let capital_str = "10000".to_string();
+        let random_seed_str = "42".to_string();
 
         // Parse once for the engine (fall back to sensible defaults on bad strings)
         let start = NaiveDate::parse_from_str(&start_str, "%Y-%m-%d").unwrap_or_else(|_| NaiveDate::from_ymd_opt(2022, 1, 1).unwrap());
@@ -95,6 +97,7 @@ impl App {
         let short_t: f64 = short_str.trim().parse().unwrap_or(0.65);
         let cost: f64 = cost_str.trim().parse().unwrap_or(8.0);
         let cap: f64 = capital_str.trim().parse().unwrap_or(10000.0);
+        let seed: u64 = random_seed_str.trim().parse().unwrap_or(42);
 
         let cfg = BacktestConfig {
             lookback_days: window,
@@ -103,6 +106,7 @@ impl App {
             short_threshold: short_t,
             cost_bps: cost,
             max_position: 1.0,
+            random_seed: seed,
             ..Default::default()
         };
 
@@ -118,6 +122,7 @@ impl App {
             short_str,
             cost_str,
             capital_str,
+            random_seed_str,
             focused: 0,
             engine,
             bars: None,
@@ -148,6 +153,7 @@ impl App {
             6 => "Short thresh (score < -)",
             7 => "Cost (bps one-way)",
             8 => "Initial Capital ($)",
+            9 => "RNG seed (LPPL fits)",
             _ => "?",
         }
     }
@@ -163,6 +169,7 @@ impl App {
             6 => &mut self.short_str,
             7 => &mut self.cost_str,
             8 => &mut self.capital_str,
+            9 => &mut self.random_seed_str,
             _ => &mut self.ticker,
         }
     }
@@ -231,6 +238,12 @@ impl App {
             return Err("Initial capital must be > 0".into());
         }
 
+        let seed: u64 = self
+            .random_seed_str
+            .trim()
+            .parse()
+            .unwrap_or(42);
+
         let cfg = BacktestConfig {
             lookback_days: window,
             refit_every: refit,
@@ -238,6 +251,7 @@ impl App {
             short_threshold: short_t,
             cost_bps: cost,
             max_position: 1.0,
+            random_seed: seed,
             ..Default::default()
         };
 
@@ -297,6 +311,12 @@ impl App {
                 if let Ok(v) = self.capital_str.trim().parse::<i32>() {
                     let nv = (v + dir * step).max(1000).min(1_000_000);
                     self.capital_str = nv.to_string();
+                }
+            }
+            9 => {
+                if let Ok(v) = self.random_seed_str.trim().parse::<u64>() {
+                    let nv = (v as i64 + dir as i64 * 1).max(0).min(u64::MAX as i64) as u64;
+                    self.random_seed_str = nv.to_string();
                 }
             }
             _ => {}
@@ -602,6 +622,7 @@ fn ui(f: &mut Frame, app: &App) {
             6 => &app.short_str,
             7 => &app.cost_str,
             8 => &app.capital_str,
+            9 => &app.random_seed_str,
             _ => &app.ticker,
         };
         let is_focus = i == app.focused;

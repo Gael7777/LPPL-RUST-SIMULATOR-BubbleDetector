@@ -1,4 +1,6 @@
 use nalgebra::{Cholesky, DMatrix, DVector, LU};
+use rand::rngs::StdRng;
+use rand::SeedableRng;
 use rand::Rng;
 use std::f64::consts::PI;
 
@@ -43,12 +45,16 @@ pub struct LpplFit {
     pub n_points: usize,
 }
 
-/// Fit the LPPL model to log-prices using pure multi-start random search + closed-form linear solve for (A,B,C).
+/// Fit the LPPL model to log-prices using pure multi-start random search + closed-form
+/// linear solve for (A,B,C). The `seed` makes the search deterministic/reproducible:
+/// the same seed + same data always yields the same best parameters (and thus same
+/// bubble scores and strategy results).
+///
 /// No external optimizer crate (avoids LAPACK/Windows linking issues).
 ///
 /// times: increasing sequence, typically 0.0 .. N (trading days index)
 /// log_prices: ln(close) or ln(adj_close), same length, positive prices.
-pub fn fit_lppl(log_prices: &[f64], times: &[f64]) -> Result<LpplFit, String> {
+pub fn fit_lppl(log_prices: &[f64], times: &[f64], seed: u64) -> Result<LpplFit, String> {
     if log_prices.len() != times.len() || log_prices.len() < 30 {
         return Err("Need at least 30 points for LPPL fit".to_string());
     }
@@ -61,7 +67,7 @@ pub fn fit_lppl(log_prices: &[f64], times: &[f64]) -> Result<LpplFit, String> {
     let tc_min = t_max + 1.0;
     let tc_max = t_max + (t_span * 0.4).max(30.0);
 
-    let mut rng = rand::thread_rng();
+    let mut rng: StdRng = StdRng::seed_from_u64(seed);
     let n_samples = 1200usize; // plenty for demo / backtest speed
 
     let mut best_params: Option<LpplParams> = None;
@@ -174,7 +180,7 @@ fn linear_solve_abc(
 }
 
 /// Convenience: fit on a slice of PriceBars (uses log adj_close, trading-day time index)
-pub fn fit_lppl_on_bars(bars: &[super::data::PriceBar], start_idx: usize, end_idx: usize) -> Result<LpplFit, String> {
+pub fn fit_lppl_on_bars(bars: &[super::data::PriceBar], start_idx: usize, end_idx: usize, seed: u64) -> Result<LpplFit, String> {
     let slice = &bars[start_idx..end_idx];
     if slice.len() < 30 {
         return Err("window too small".into());
@@ -187,5 +193,5 @@ pub fn fit_lppl_on_bars(bars: &[super::data::PriceBar], start_idx: usize, end_id
         .map(|b| (b.adj_close.max(0.01)).ln())
         .collect();
 
-    fit_lppl(&log_prices, &times)
+    fit_lppl(&log_prices, &times, seed)
 }

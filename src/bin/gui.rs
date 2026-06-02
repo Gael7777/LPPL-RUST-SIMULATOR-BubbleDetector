@@ -88,6 +88,7 @@ struct HlpplGuiApp {
     // New strategy mode controls (exposed nicely in the UI)
     position_bias: hlpll_backtester::PositionBias,
     invert_signal: bool,
+    random_seed: u64,  // exposed so user can control reproducibility of LPPL random search
 }
 
 impl HlpplGuiApp {
@@ -196,6 +197,7 @@ impl HlpplGuiApp {
             show_help: false,
             position_bias: hlpll_backtester::PositionBias::LongShort,
             invert_signal: false,
+            random_seed: 42,
         }
     }
 
@@ -225,6 +227,7 @@ impl HlpplGuiApp {
             max_position: 1.0,
             position_bias: self.position_bias,
             invert_signal: self.invert_signal,
+            random_seed: self.random_seed,
         };
 
         self.busy = true;
@@ -326,6 +329,7 @@ impl HlpplGuiApp {
         // New modes
         self.engine.config.position_bias = self.position_bias;
         self.engine.config.invert_signal = self.invert_signal;
+        self.engine.config.random_seed = self.random_seed;
     }
 }
 
@@ -422,6 +426,10 @@ impl eframe::App for HlpplGuiApp {
                 ui.label("");
                 ui.checkbox(&mut self.invert_signal, "Invert (high score = danger)")
                     .on_hover_text("If checked, a high positive bubble score is treated as 'overextended / crash risk' and produces a negative (short) raw signal. Often more in line with the original bubble-detection literature than pure momentum continuation.");
+                ui.end_row();
+
+                ui.label("RNG seed (LPPL fits)").on_hover_text("Seed for the random search inside each LPPL fit. Fixed seed (e.g. 42) makes every 'Run Simulation' with identical params produce exactly the same results (fully reproducible). Change it to explore different possible LPPL fits.");
+                ui.add(egui::DragValue::new(&mut self.random_seed).speed(1));
                 ui.end_row();
             });
 
@@ -732,7 +740,7 @@ impl eframe::App for HlpplGuiApp {
                     ui.label("1. Set Ticker + Start/End dates (or use Quick preset buttons).");
                     ui.label("2. Tweak Window (LPPL fit lookback), Refit every, Long/Short thresholds, Cost (bps), Initial Capital.");
                     ui.label("3. Click 'Test Yahoo API' to validate data availability for your security/time (shows bar count, last price).");
-                    ui.label("4. Click 'Run Simulation' (or the top button) — this runs the exact same engine as the CLI/TUI: full walk-forward LPPL fits + bubble score + strict long/short/flat rules + costs.");
+                    ui.label("4. Click 'Run Simulation' (or the top button) — this runs the exact same engine as the CLI/TUI: full walk-forward LPPL fits + bubble score + strict long/short/flat rules + costs. The 'RNG seed' controls reproducibility of the LPPL random search (same seed + params = identical results every run).");
                     ui.label("5. Use the 'view width' slider + 'Fit view' to zoom/pan the history. Drag the cursor slider (or click+drag on the top Price chart) to inspect any day.");
 
                     ui.separator();
