@@ -4,7 +4,7 @@ use env_logger::Env;
 use log::info;
 use std::error::Error;
 
-use hlpll_backtester::modules::backtest::{run_backtest, BacktestConfig, RunMode, PositionBias, run_future_bubble_prediction, compute_live_sentiment};
+use hlpll_backtester::modules::backtest::{run_backtest, BacktestConfig, RunMode, PositionBias, SignalMode, run_future_bubble_prediction, compute_live_sentiment};
 use hlpll_backtester::modules::data::fetch_yahoo_history;
 use hlpll_backtester::modules::utils::{plot_equity_curve, print_summary, save_series_csv, save_signals_csv};
 
@@ -23,20 +23,28 @@ struct Args {
     #[arg(long, default_value = "2024-12-31")]
     end: String,
 
-    /// LPPL lookback window (trading days)
-    #[arg(long, default_value_t = 300)]
+    /// LPPL lookback window W (trading days, paper default 250)
+    #[arg(long, default_value_t = 250)]
     window: usize,
 
-    /// Refit LPPL every N days
+    /// Refit LPPL every N days (fast signal mode only)
     #[arg(long, default_value_t = 25)]
     refit_every: usize,
 
-    /// Long threshold for bubble score
-    #[arg(long, default_value_t = 0.75)]
+    /// Paper mode: stride between overlapping window fits (1=full notebook, 5=faster)
+    #[arg(long, default_value_t = 5)]
+    window_stride: usize,
+
+    /// Signal pipeline: paper (overlapping windows + running-max norm) or fast
+    #[arg(long, default_value = "paper", value_parser = ["paper", "fast"])]
+    signal_mode: String,
+
+    /// Long threshold for bubble score (paper scale ~0.3–0.7)
+    #[arg(long, default_value_t = 0.55)]
     long_thresh: f64,
 
     /// Short threshold for bubble score
-    #[arg(long, default_value_t = 0.75)]
+    #[arg(long, default_value_t = 0.55)]
     short_thresh: f64,
 
     /// Transaction cost in basis points (one way)
@@ -148,9 +156,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         args.ensemble_seeds.split(',').filter_map(|s| s.trim().parse::<u64>().ok()).collect()
     };
 
+    let signal_mode = if args.signal_mode == "fast" {
+        SignalMode::Fast
+    } else {
+        SignalMode::Paper
+    };
+
     let cfg = BacktestConfig {
         lookback_days: args.window,
         refit_every: args.refit_every,
+        window_stride: args.window_stride,
+        signal_mode,
         long_threshold: args.long_thresh,
         short_threshold: args.short_thresh,
         cost_bps: args.cost_bps as f64,

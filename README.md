@@ -77,7 +77,7 @@ run_backtest (walk-forward loop, day i = lookback .. end)
    ├─ Every refit_every days (from first tradable day):
    │     • Window = bars[i - window .. i)
    │     • fit_lppl_on_bars → LPPL params + residuals
-   │     • eps_norm = normalize_last_residual(residuals)
+   │     • paper: overlapping-window ε, running-max ε_norm ∈ [-1,1]
    │     • hype_volume = last volume z-score (60-day roll inside window)
    │     • sentiment = last value from return-based proxy
    │     • bubble_score = piecewise formula (α₁=0.7, α₂=0.3)
@@ -103,7 +103,8 @@ results/<TICKER>_equity.png
 - **Time axis for LPPL:** trading-day index `0 .. window-1` inside each fit window (not calendar dates), to avoid weekend/holiday gaps.
 - **Prices for LPPL:** `ln(adj_close)`.
 - **First signal day:** index `lookback_days` (first `window` bars are warm-up only).
-- **Score staleness:** between refits, `bubble_score`, `eps_norm`, `hype_volume`, and `sentiment` are **held constant** until the next refit day.
+- **Paper mode (default):** signals are precomputed for every bar (overlapping LPPL windows + causal running-max norm).
+- **Fast mode:** between refits, LPPL curve is projected forward with updated hype/sentiment.
 
 ---
 
@@ -154,12 +155,12 @@ $$
 Normalized signal (last day of the window):
 
 $$
-\varepsilon_{\text{norm}} = \frac{\varepsilon_{T}}{\mathrm{std}(\varepsilon_{1..T})}
+\varepsilon_{\text{norm}}(t) = \frac{\varepsilon(t)}{\max_{s \le t} |\varepsilon(s)|}
 $$
 
-(mean-centered variance in code; tiny constant added to std for stability)
+(bounded in \([-1, 1]\); paper Eq. 8)
 
-**Plain text:** `eps_norm = last_residual / std(residuals in window)`
+**Plain text:** `eps_norm(t) = epsilon(t) / running_max_abs_epsilon_up_to_t`
 
 **Interpretation**
 
@@ -311,10 +312,12 @@ cargo run --release -- [FLAGS]
 | `--tickers` | string | `HOUS,AMTX,CAR` | Comma-separated Yahoo symbols (spaces after commas are trimmed). |
 | `--start` | `YYYY-MM-DD` | `2018-01-01` | First calendar date for price download (inclusive). |
 | `--end` | `YYYY-MM-DD` | `2024-12-31` | Last calendar date for price download (inclusive). |
-| `--window` | usize | `300` | LPPL lookback length in **trading days**. Each fit uses this many bars ending the day **before** the signal day. |
+| `--window` | usize | `250` | LPPL window **W** (trading days), notebook default. |
+| `--window-stride` | usize | `5` | Paper mode: fit every Nth overlapping window end (`1` = full notebook). |
+| `--signal-mode` | str | `paper` | `paper` (overlapping windows) or `fast` (single window + refit). |
 | `--refit-every` | usize | `25` | Refit LPPL and recompute score every this many days (from first signal day). Between refits, score is unchanged. |
-| `--long-thresh` | f64 | `0.75` | Go **long** when `bubble_score >` this value. |
-| `--short-thresh` | f64 | `0.75` | Go **short** when `bubble_score < -` this value. |
+| `--long-thresh` | f64 | `0.55` | Go **long** when `bubble_score >` this value (paper scale). |
+| `--short-thresh` | f64 | `0.55` | Go **short** when `bubble_score < -` this value. |
 | `--cost-bps` | f64 | `10.0` | One-way transaction cost in **basis points** (10 = 0.10%) deducted on each position change. |
 | `--outdir` | path | `results` | Directory for `*_signals.csv`, `*_equity.csv`, `*_equity.png`. |
 

@@ -118,10 +118,10 @@ impl HlpplGuiApp {
         let ticker = "CAR".to_string();
         let start_str = "2022-01-01".to_string();
         let end_str = "2024-12-31".to_string();
-        let window = 180usize;
-        let refit_every = 20usize;
-        let long_thresh = 0.65;
-        let short_thresh = 0.65;
+        let window = 250usize;
+        let refit_every = 25usize;
+        let long_thresh = 0.55;
+        let short_thresh = 0.55;
         let cost_bps = 8.0;
         let initial_capital = 10_000.0;
 
@@ -285,7 +285,8 @@ impl HlpplGuiApp {
             run_mode: self.run_mode,
             ensemble_seeds: if self.ensemble_seeds_str.trim().is_empty() { vec![] } else { self.ensemble_seeds_str.split(',').filter_map(|s| s.trim().parse().ok()).collect() },
             predict_horizon_days: self.predict_horizon,
-            use_confidence_for_sizing: false, // UI can add checkbox later
+            use_confidence_for_sizing: false,
+            ..Default::default()
         };
 
         self.busy = true;
@@ -937,7 +938,7 @@ impl eframe::App for HlpplGuiApp {
                     ui.heading("Left Panel Controls (detailed)");
                     ui.monospace("Ticker / Start / End: The security and calendar range. Data is fetched from Yahoo Finance public chart API (no key). Changing these requires re-Test or re-Run.");
                     ui.monospace("Window (days): LPPL lookback length in trading days. Each refit fits the 7-param LPPL model on the prior N bars. Larger = more stable but lags more.");
-                    ui.monospace("Refit every: Recompute the (expensive) LPPL + score only every N days. On non-refit days the bubble_score, eps_norm, hype, sentiment are held constant → you see flat steps in the middle chart.");
+                    ui.monospace("Refit every: Used only in Fast signal mode. Paper mode (default) precomputes overlapping-window LPPL residuals + running-max ε_norm daily — scores update every bar.");
                     ui.monospace("Long threshold / Short threshold: Position = +1 (long) if bubble_score > Long thresh; -1 (short) if bubble_score < -Short thresh; else 0 (flat).");
                     ui.monospace("Cost (bps): One-way transaction cost in basis points (0.01% = 1 bps) subtracted from the daily strategy return on any day the position changes.");
                     ui.monospace("Initial Capital $: Starting portfolio value for the simulation. All equity numbers and per-trade PnL are scaled to this. Default 10 000.");
@@ -952,7 +953,7 @@ impl eframe::App for HlpplGuiApp {
                     ui.label("This is the visual 'bubble regime' indicator — when the model sees a strong positive bubble reading it goes long (green price line).");
 
                     ui.strong("Middle chart — Bubble Score (the core indicator) + thresholds");
-                    ui.label("The yellow steppy line is the bubble_score. Because scores are only recomputed on refit days, you see flat horizontal steps between refits (this is by design and visible in all outputs).");
+                    ui.label("The yellow line is bubble_score (paper mode: smooth daily updates from overlapping LPPL windows). Fast mode may show flat steps between refits.");
                     ui.label("Green horizontal line ≈ your Long threshold. Red ≈ -Short threshold.");
                     ui.label("When the yellow line is above the green line the strategy holds LONG. Below the red line → SHORT. Between → FLAT.");
                     ui.label("The score itself is eps_norm (LPPL residual normalized) + 0.7*hype_volume (volume attention proxy) + 0.3*sentiment (return proxy), with the piecewise sign flip when eps_norm < 0.");

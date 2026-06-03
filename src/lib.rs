@@ -51,14 +51,16 @@ pub use engine::{CurrentSentiment, HlpplEngine, Trade};
 pub use modules::backtest::{BacktestConfig, BacktestResult, DailySignal, PositionBias, RunMode, run_backtest, FutureBubblePrediction, LiveSentimentSnapshot, run_future_bubble_prediction, compute_live_sentiment};
 pub use modules::data::{bars_to_dataframe, fetch_yahoo_history, load_prices_parquet, PriceBar};
 pub use modules::lppl::{
-    compute_bubble_confidence, compute_bubble_confidence_ensemble, is_strict_jls_valid, fit_lppl_on_bars, BubbleAnalysisResult, LpplFilterConfig, LpplFit, LpplParams,
+    compute_bubble_confidence, compute_bubble_confidence_ensemble, is_strict_jls_valid, fit_lppl, fit_lppl_on_bars,
+    BubbleAnalysisResult, LpplFilterConfig, LpplFit, LpplFitConfig, LpplParams,
 };
+pub use modules::backtest::SignalMode;
+pub use modules::hlppl_signals::{build_signal_series, HlpplSignalSeries};
+pub use modules::bubble_score::{compute_bubble_score, normalize_running_max, normalize_last_residual_running_style};
 pub use modules::utils::{
     build_equity_series, build_regime_price_segments, build_score_series, export_backtest_artifacts,
     plot_equity_curve, print_summary, save_series_csv, save_signals_csv,
 };
 
-// Re-export a couple of common helpers from bubble/hype if people want to experiment
-pub use modules::bubble_score::{compute_bubble_score, normalize_last_residual};
 pub use modules::hype::compute_volume_hype;
 pub use modules::sentiment::compute_simple_sentiment;

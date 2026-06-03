@@ -97,10 +97,10 @@ impl App {
         let ticker = "CAR".to_string();
         let start_str = "2022-01-01".to_string();
         let end_str = "2024-12-31".to_string();
-        let window_str = "180".to_string();
-        let refit_str = "20".to_string();
-        let long_str = "0.65".to_string();
-        let short_str = "0.65".to_string();
+        let window_str = "250".to_string();
+        let refit_str = "25".to_string();
+        let long_str = "0.55".to_string();
+        let short_str = "0.55".to_string();
         let cost_str = "8".to_string();
         let capital_str = "10000".to_string();
         let random_seed_str = "42".to_string();

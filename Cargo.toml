@@ -62,6 +62,7 @@ egui_plot = { version = "0.28", optional = true }
 [[bin]]
 name = "hlpll-backtester"
 path = "src/main.rs"
+required-features = ["cli"]
 # Built with: cargo run --release --bin hlpll-backtester   (cli feature is default)
 
 [[bin]]
